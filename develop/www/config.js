@@ -289,8 +289,10 @@
   };
 
   /* «Чиповые» поля: значение рисуется набором чипов с порядком и подсказками,
-   * а не одной строкой. Порядок значим (egress_interface = приоритет). */
-  var CHIP_KINDS = { ifacelist: 1, list: 1 };
+   * а не одной строкой. Порядок значим (egress_interface = приоритет фейловера,
+   * egress_address сопоставляется с интерфейсами ПО ИНДЕКСУ — тоже порядок).
+   * iplist/cidrlist — те же чипы: значения подсказываются из subnets[].cidr. */
+  var CHIP_KINDS = { ifacelist: 1, iplist: 1, cidrlist: 1 };
 
   /* Поле одиночное, но с подсказками из /api/choices. */
   var CHOICE_KINDS = { iface: 'ifaces', table: 'tables', mark: 'marks', path: 'paths' };
@@ -316,6 +318,46 @@
       var n = +p;
       return n >= 0 && n <= 255;
     });
+  }
+
+  /* Адрес без префикса: "10.8.0.2/24" -> "10.8.0.2". */
+  function cidrAddress(cidr) {
+    var s = String(cidr === null || cidr === undefined ? '' : cidr);
+    var i = s.indexOf('/');
+    return i < 0 ? s : s.slice(0, i);
+  }
+
+  /* Сеть из CIDR — считаем в JS (битовая маска, без внешних библиотек):
+   * "10.8.0.2/24" -> "10.8.0.0/24", "192.168.1.1/24" -> "192.168.1.0/24".
+   * /31 и /32 не «сети» в обычном смысле (точечные адреса, p2p-линки) —
+   * отдаём как есть; мусор -> null. */
+  function cidrNetwork(cidr) {
+    var m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d{1,2})$/
+      .exec(String(cidr === null || cidr === undefined ? '' : cidr));
+    if (!m) return null;
+    var o = [+m[1], +m[2], +m[3], +m[4]];
+    var pfx = +m[5];
+    if (pfx > 32) return null;
+    if (o[0] > 255 || o[1] > 255 || o[2] > 255 || o[3] > 255) return null;
+    if (pfx >= 31) return o.join('.') + '/' + pfx;
+    var ip = ((((o[0] << 24) >>> 0) + (o[1] << 16) + (o[2] << 8) + o[3]) >>> 0);
+    var mask = pfx === 0 ? 0 : ((0xffffffff << (32 - pfx)) >>> 0);
+    var net = (ip & mask) >>> 0;
+    return [(net >>> 24) & 255, (net >>> 16) & 255, (net >>> 8) & 255, net & 255]
+      .join('.') + '/' + pfx;
+  }
+
+  /* Убрать повторы значений в наборе подсказок (одно значение — один раз). */
+  function dedupeItems(items) {
+    var seen = {}, out = [];
+    items.forEach(function (it) {
+      if (!it || !it.value) return;
+      var k = String(it.value);
+      if (seen[k]) return;
+      seen[k] = 1;
+      out.push(it);
+    });
+    return out;
   }
 
   /* Имя сетевого интерфейса: буквы/цифры/._- (nwg0, br-lan, ppp1.1). */
@@ -437,6 +479,20 @@
         if (l[i] && l[i].path === v) return true;
       return false;
     }
+    if (kind === 'iplist' || kind === 'cidrlist') {
+      /* Подсети с интерфейсов: для iplist сверяем адрес без префикса, для
+       * cidrlist — сеть (или сам cidr, если префикс нестандартный). */
+      var subs = c.subnets || [];
+      for (i = 0; i < subs.length; i++) {
+        if (!subs[i] || !subs[i].cidr) continue;
+        if (kind === 'iplist') {
+          if (cidrAddress(subs[i].cidr) === v) return true;
+        } else if (cidrNetwork(subs[i].cidr) === v || String(subs[i].cidr) === v) {
+          return true;
+        }
+      }
+      return false;
+    }
     return true;
   }
 
@@ -457,12 +513,33 @@
     if (tun.length) groups.push({ label: 'Туннели', items: tun });
     if (br.length) groups.push({ label: 'Мосты', items: br });
     if (phys.length) groups.push({ label: 'Физические', items: phys });
-    if ((c.subnets || []).length) {
-      groups.push({ label: 'Подсети (LAN)', items: (c.subnets || []).map(function (s) {
-        return { value: s.cidr, note: s.dev || '' };
-      }) });
-    }
+    /* Подсети здесь НЕ предлагаем: имя интерфейса и CIDR — разные вещи.
+     * Подсказки из subnets[] живут в iplist/cidrlist (см. subnetChoiceItems). */
     return groups;
+  }
+
+  /* Подсказки из подсетей с интерфейсов (subnets[] = {cidr, dev}):
+   *   iplist   -> адрес без префикса: 10.8.0.2/24 -> 10.8.0.2 (это адрес
+   *               тоннеля, ровно то, что нужно egress_address/health_probe);
+   *   cidrlist -> сеть: 192.168.1.1/24 -> 192.168.1.0/24 (/31, /32 как есть).
+   * Пояснение — имя интерфейса. Повторы значений убираем. */
+  function subnetChoiceItems(kind) {
+    var c = choices();
+    if (!c) return [];
+    var out = [];
+    (c.subnets || []).forEach(function (s) {
+      if (!s || !s.cidr) return;
+      var v;
+      if (kind === 'cidrlist') {
+        v = cidrNetwork(s.cidr);
+      } else {
+        v = cidrAddress(s.cidr);
+        if (!isValidIPv4(v)) v = null;
+      }
+      if (!v) return;
+      out.push({ value: v, note: s.dev || '' });
+    });
+    return dedupeItems(out);
   }
 
   function choiceGroupsFor(kind) {
@@ -470,6 +547,16 @@
     var groups = [];
     if (!c) return groups;
     if (kind === 'iface' || kind === 'ifacelist') return ifaceGroups();
+    if (kind === 'iplist' || kind === 'cidrlist') {
+      var items = subnetChoiceItems(kind);
+      if (items.length) {
+        groups.push({
+          label: kind === 'cidrlist' ? 'Подсети интерфейсов' : 'Адреса интерфейсов',
+          items: items
+        });
+      }
+      return groups;
+    }
     if (kind === 'table') {
       groups.push({ label: 'Таблицы маршрутизации', items: (c.tables || []).map(function (t) {
         return { value: String(t.id), note: t.used ? 'занята' : 'свободна' };
@@ -546,7 +633,23 @@
     el.textContent = '«' + v + '» нет в списке известных — сохранится как есть';
   }
 
-  /* --- чипы (ifacelist): порядок значим, есть drag&drop и стрелки --- */
+  /* Предупреждение для чипового списка: перечисляем неизвестные значения
+   * (одним setUnknownWarn их не показать — он рассчитан на одно значение). */
+  function setChipWarn(el, unknown) {
+    if (!el) return;
+    if (!unknown || !unknown.length) {
+      el.hidden = true;
+      el.textContent = '';
+      return;
+    }
+    var shown = unknown.slice(0, 3).join(', ');
+    if (unknown.length > 3)
+      shown += ' …(ещё ' + (unknown.length - 3) + ')';
+    el.hidden = false;
+    el.textContent = 'нет в списке известных: ' + shown + ' — сохранится как есть';
+  }
+
+  /* --- чипы (ifacelist/iplist/cidrlist): порядок значим, есть drag&drop и стрелки --- */
 
   /* Разбор строки в список значений: порядок и дубликаты сохраняем — для
    * egress_interface порядок = приоритет фейловера. */
@@ -645,7 +748,7 @@
       }
       values.forEach(function (v, idx) { chips.appendChild(makeChip(v, idx)); });
       var unknown = values.filter(function (v) { return !isKnownValue(fld.kind, v); });
-      setUnknownWarn(warn, fld, unknown.join(', '));
+      setChipWarn(warn, unknown);
     }
 
     container.appendChild(chips);
@@ -669,7 +772,7 @@
       v = String(v || '').trim();
       if (!v) return;
       if (!isValidFormat(fld, v)) {
-        toast('«' + v + '» не похоже на имя интерфейса', false);
+        toast('«' + v + '» не подходит для поля «' + fld.label + '»', false);
         return;
       }
       values.push(v);
