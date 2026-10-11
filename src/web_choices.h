@@ -63,13 +63,22 @@ const char *choice_iface_kind(const char *name);
  * uevent может быть NULL (не прочитался). */
 const char *choice_dev_kind(const char *name, const char *uevent);
 
-/* Разбор одной строки `ip -4 -o addr show`:
+/* Разбор одной строки `ip -4 -o addr show` (ДОПОЛНИТЕЛЬНЫЙ источник подсетей;
+ * основной путь — ioctl, см. ниже):
  * "2: eth0    inet 192.168.1.1/24 brd ... scope global eth0\..."
  * Имя интерфейса берётся из токена перед «\» (реальный формат) либо из
  * отдельного токена dev; если ни того, ни другого нет — 0 (не выдумываем).
  * Заполняет subnet ("192.168.1.1/24") и dev ("eth0"). 1 — разобрано. */
 int choice_parse_dev(const char *line, char *subnet, size_t subsz,
                      char *dev, size_t devsz);
+
+/* Префикс из маски сети: число ведущих единичных бит (0..32).
+ * Маска — в ХОСТОВОМ порядке (после ntohl): 0xffffff00 -> 24. */
+int choice_mask_prefix(unsigned long mask);
+
+/* "A.B.C.D/len" в out. addr — в хостовом порядке, prefix 0..32.
+ * 0 — не поместилось/неверные аргументы (out обнуляется). */
+int choice_format_cidr(char *out, size_t outsz, unsigned long addr, int prefix);
 
 /* Разбор строки конфига "key=value" -> key/value (обрезанные по краям).
  * Комментарии и строки без '=' игнорируются. 1 — есть пара. */
@@ -92,7 +101,12 @@ int choice_mark_free_used(const unsigned long *used, size_t n);
  * считается при сборке JSON: она требует /sys/class/net/<if>/uevent. */
 void choice_json_init(choice_set *cs);
 void collect_ifaces(choice_set *cs, const char *netdir);
-void collect_subnets(choice_set *cs);
+/* subnets: field = имя интерфейса, value = "адрес/префикс". Адреса берутся
+ * через ioctl(SIOCGIFADDR/SIOCGIFNETMASK) по интерфейсам из netdir — внешняя
+ * утилита `ip` НЕ нужна (у демона PATH урезан, и её может не быть вовсе);
+ * `ip`, если найдётся, лишь дополняет результат (дедуп по cidr+dev).
+ * Интерфейсы без IPv4 и loopback пропускаются. netdir может быть NULL. */
+void collect_subnets(choice_set *cs, const char *netdir);
 /* Занятые таблицы/метки из конфига: и разобранные профили (все слоты cfg,
  * не только n_profiles), и любой profileN_table/profileN_mark, найденный в
  * тексте файла (значение могло быть выставлено вручную). conf_path/ cfg
@@ -104,9 +118,9 @@ void collect_list_files(choice_set *cs, const char *dir);
 /* --- ответ ------------------------------------------------------------ */
 
 /* Какие источники опрашивать. Панель включает все; host-тест — только те,
- * что не зависят от системы (иначе тест звал бы `ip` и /sys). */
+ * что не зависят от системы (иначе тест звал бы сокеты/ioctl и /sys). */
 #define WC_SRC_IFACES 0x1 /* /sys/class/net */
-#define WC_SRC_SUBNETS 0x2 /* `ip -4 -o addr show` */
+#define WC_SRC_SUBNETS 0x2 /* ioctl SIOCGIFADDR/NETMASK (+ `ip`, если найдётся) */
 #define WC_SRC_USED 0x4   /* susanin.conf: занятые таблицы/метки */
 #define WC_SRC_LISTS 0x8  /* каталог списков профилей */
 #define WC_SRC_ALL 0xF

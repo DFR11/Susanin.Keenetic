@@ -1083,13 +1083,34 @@
     var activeId = ensureSubId(tab);
     var row = document.createElement('div');
     row.className = 'cfg-subnav';
+    row.setAttribute('role', 'tablist');
     tab.subnav.forEach(function (s) {
+      var unset = !!(s.profile && profileUnset(s.profile));
       var b = document.createElement('button');
       b.type = 'button';
-      b.className = 'cfg-subtab' + (s.id === activeId ? ' active' : '');
+      /* Кликабельная закладка: активная заметно выделена (CSS .cfg-subtab.active).
+       * Пометку «не задан» делаем приглушённым текстом внутри кнопки, а не
+       * частью подписи — чтобы пустой профиль не выглядел «мёртвой» кнопкой. */
+      b.className = 'cfg-subtab' + (s.id === activeId ? ' active' : '')
+                                  + (unset ? ' unset' : '');
       b.setAttribute('data-subtab', s.id);
-      b.textContent = s.label + (s.profile && profileUnset(s.profile) ? ' — не задан' : '');
-      b.onclick = function () { activeSubId[tab.id] = s.id; renderPane(tab); };
+      b.setAttribute('role', 'tab');
+      b.setAttribute('aria-selected', s.id === activeId ? 'true' : 'false');
+      b.title = unset
+        ? 'Профиль ' + s.profile + ' не задан — нажмите, чтобы настроить'
+        : 'Настроить ' + s.label;
+      b.textContent = s.label;
+      if (unset) {
+        var note = document.createElement('span');
+        note.className = 'cfg-subtab-note';
+        note.textContent = 'не задан';
+        b.appendChild(note);
+      }
+      b.onclick = function () {
+        if (activeSubId[tab.id] === s.id) return;
+        activeSubId[tab.id] = s.id;
+        renderPane(tab);   /* перерисовываем блок: только поля этого профиля */
+      };
       row.appendChild(b);
     });
     return row;
@@ -1161,6 +1182,16 @@
       var shown = tab.groups.filter(function (g) {
         return isSubGroup(g) && String(g.profile) === activeId.replace(/^p/, '');
       });
+      /* Пустой профиль: одна понятная подсказка вместо «мёртвой» формы.
+       * Поля НЕ блокируем — профиль можно завести с нуля. */
+      var sub = tab.subnav.filter(function (s) { return s.id === activeId; })[0];
+      if (sub && sub.profile && profileUnset(sub.profile)) {
+        var hint = document.createElement('div');
+        hint.className = 'cfg-profile-hint';
+        hint.textContent = 'Профиль ' + sub.profile + ' не задан — впишите имя, чтобы включить ' +
+          '(остальные поля станут активными). Поля ниже можно заполнять уже сейчас.';
+        body.appendChild(hint);
+      }
       shown.forEach(function (g) { body.appendChild(renderGroup(g)); });
     } else {
       tab.groups.forEach(function (g) { body.appendChild(renderGroup(g)); });

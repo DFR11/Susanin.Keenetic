@@ -125,13 +125,57 @@ static void test_kinds(void)
           "без uevent — по имени");
 }
 
-/* --- разбор `ip -4 -o addr show` -------------------------------------- */
+/* --- ioctl-путь: префикс из маски и формат cidr (чистые части) --------- */
+
+static void test_mask_prefix(void)
+{
+    printf("=== префикс из маски сети (ioctl SIOCGIFNETMASK) ===\n");
+    /* Маски — уже в хостовом порядке (после ntohl), как их отдаёт iface_ipv4(). */
+    CHECK(choice_mask_prefix(0xffffff00UL) == 24, "/24 = 0xffffff00");
+    CHECK(choice_mask_prefix(0xffffffffUL) == 32, "/32 = 0xffffffff");
+    CHECK(choice_mask_prefix(0xffff0000UL) == 16, "/16 = 0xffff0000");
+    CHECK(choice_mask_prefix(0xff000000UL) == 8, "/8 = 0xff000000");
+    CHECK(choice_mask_prefix(0xffffff80UL) == 25, "/25 = 0xffffff80");
+    CHECK(choice_mask_prefix(0xfffffffcUL) == 30, "/30 = 0xfffffffc");
+    CHECK(choice_mask_prefix(0xfffffffeUL) == 31, "/31 = 0xfffffffe");
+    CHECK(choice_mask_prefix(0x80000000UL) == 1, "/1 = 0x80000000");
+    CHECK(choice_mask_prefix(0UL) == 0, "нулевая маска -> 0");
+    CHECK(choice_mask_prefix(0xff00ff00UL) == 8, "неконтигуозная: ведущие единицы");
+}
+
+static void test_format_cidr(void)
+{
+    char b[80];
+
+    printf("=== формат \"адрес/префикс\" для subnets[] ===\n");
+    CHECK(choice_format_cidr(b, sizeof(b), 0x0a080002UL, 24) == 1 &&
+          strcmp(b, "10.8.0.2/24") == 0, "10.8.0.2/24");
+    CHECK(choice_format_cidr(b, sizeof(b), 0xc0a80101UL, 24) == 1 &&
+          strcmp(b, "192.168.1.1/24") == 0, "192.168.1.1/24");
+    CHECK(choice_format_cidr(b, sizeof(b), 0x7f000001UL, 8) == 1 &&
+          strcmp(b, "127.0.0.1/8") == 0, "127.0.0.1/8");
+    CHECK(choice_format_cidr(b, sizeof(b), 0xffffffffUL, 32) == 1 &&
+          strcmp(b, "255.255.255.255/32") == 0, "255.255.255.255/32");
+    CHECK(choice_format_cidr(b, sizeof(b), 0UL, 0) == 1 &&
+          strcmp(b, "0.0.0.0/0") == 0, "0.0.0.0/0");
+    CHECK(choice_format_cidr(b, sizeof(b), 0x0a080002UL, 33) == 0 && b[0] == '\0',
+          "префикс > 32 -> 0 и пустая строка");
+    CHECK(choice_format_cidr(b, sizeof(b), 0x0a080002UL, -1) == 0, "отрицательный префикс -> 0");
+    CHECK(choice_format_cidr(b, 4, 0x0a080002UL, 24) == 0 && b[0] == '\0',
+          "маленький буфер -> 0 (не обрезаем молча)");
+    /* Связка целиком: маска от ioctl -> готовый cidr (как в iface_ipv4). */
+    CHECK(choice_format_cidr(b, sizeof(b), 0x0a080002UL,
+                             choice_mask_prefix(0xffffff00UL)) == 1 &&
+          strcmp(b, "10.8.0.2/24") == 0, "маска+адрес -> 10.8.0.2/24");
+}
+
+/* --- разбор `ip -4 -o addr show` (теперь лишь ДОПОЛНЕНИЕ к ioctl) ------ */
 
 static void test_parse_dev(void)
 {
     char sub[80], dev[64];
 
-    printf("=== разбор строки `ip -4 -o addr show` ===\n");
+    printf("=== разбор строки `ip -4 -o addr show` (доп. источник) ===\n");
     /* Реальный формат busybox/iproute2: имя интерфейса — последним токеном. */
     CHECK(choice_parse_dev("2: eth0    inet 192.168.1.1/24 brd 192.168.1.255 "
                            "scope global eth0\\      valid_lft forever",
@@ -455,6 +499,8 @@ int main(void)
     test_jbuf();
     test_mark_escape();
     test_kinds();
+    test_mask_prefix();
+    test_format_cidr();
     test_parse_dev();
     test_parse_conf();
     test_looks_like_mark();

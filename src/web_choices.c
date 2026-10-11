@@ -5,23 +5,36 @@
  * свободные fwmark, файлы списков профилей. Панель показывает их выпадающим
  * списком рядом с полем — вместо ручного ввода.
  *
+ * Источники — только то, что доступно самому демону:
+ *   - интерфейсы: перебор /sys/class/net;
+ *   - адреса/префиксы: ioctl(SIOCGIFADDR/SIOCGIFNETMASK) — внешняя утилита
+ *     `ip` НЕ обязательна (у агента PATH урезан, и её может не быть вовсе);
+ *     `ip -4 -o addr show` используется лишь как дополнение, если найдётся;
+ *   - таблицы/метки: susanin.conf; файлы списков: каталог профилей.
+ *
  * Жёсткие правила этого файла:
  *   - никаких новых зависимостей (только POSIX/C11, как остальной агент);
- *   - отказ любого источника (нет каталога, нет утилиты, нет прав) — пустой
+ *   - отказ любого источника (нет каталога, нет прав, нет IPv4) — пустой
  *     массив и код 200, но НЕ ошибка и НЕ падение;
  *   - разбор отделён от системных вызовов, чтобы покрываться host-тестом. */
 
 #define _GNU_SOURCE
 #include "web_choices.h"
 
+#include <arpa/inet.h>
 #include <ctype.h>
 #include <dirent.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 
 /* --- аккуратная сборка JSON без snprintf-переполнений --------------- */
 
@@ -306,6 +319,46 @@ int choice_parse_dev(const char *line, char *subnet, size_t subsz,
     return 1;
 }
 
+/* Префикс из маски сети: число ведущих единичных бит (0..32).
+ * Маска — в хостовом порядке (после ntohl): 0xffffff00 -> 24.
+ * Неконтигуозную маску трактуем по ведущим битам — для реальных netmask
+ * (0xffffffff, 0xffffff00, …) результат совпадает с «числом единиц». */
+int choice_mask_prefix(unsigned long mask)
+{
+    int n = 0;
+    unsigned long bit;
+
+    mask &= 0xffffffffUL;
+    for (bit = 0x80000000UL; bit != 0UL; bit >>= 1) {
+        if (!(mask & bit))
+            break;
+        n++;
+    }
+    return n;
+}
+
+/* "A.B.C.D/len" в out. addr — в хостовом порядке, prefix 0..32.
+ * Собираем вручную (без inet_ntop): зависимостей меньше, а формат — тот же
+ * "адрес/префикс", что панель уже умеет. 0 — не поместилось/плохие аргументы. */
+int choice_format_cidr(char *out, size_t outsz, unsigned long addr, int prefix)
+{
+    int n;
+
+    if (!out || !outsz)
+        return 0;
+    out[0] = '\0';
+    if (prefix < 0 || prefix > 32)
+        return 0;
+    n = snprintf(out, outsz, "%lu.%lu.%lu.%lu/%d",
+                 (addr >> 24) & 0xffUL, (addr >> 16) & 0xffUL,
+                 (addr >> 8) & 0xffUL, addr & 0xffUL, prefix);
+    if (n < 0 || (size_t)n >= outsz) {
+        out[0] = '\0';
+        return 0;
+    }
+    return 1;
+}
+
 int choice_parse_conf_line(const char *line, char *key, size_t keysz,
                            char *val, size_t valsz)
 {
@@ -483,17 +536,92 @@ void collect_ifaces(choice_set *cs, const char *netdir)
     closedir(d);
 }
 
-void collect_subnets(choice_set *cs)
+/* IPv4-адрес и маска интерфейса через ioctl -> "A.B.C.D/len".
+ * 1 — получилось. Интерфейс без IPv4 (ioctl не отработал или в ответе не
+ * AF_INET) и loopback пропускаем. fd — сокет AF_INET/SOCK_DGRAM. */
+static int iface_ipv4(int fd, const char *name, char *out, size_t outsz)
+{
+    struct ifreq ifr;
+    struct sockaddr_in *sin;
+    unsigned long addr, mask;
+    int pfx;
+
+    if (!name || !out || !outsz)
+        return 0;
+    out[0] = '\0';
+    if (strlen(name) >= sizeof(ifr.ifr_name))
+        return 0;                          /* имя не влезет в ifr_name */
+
+    memset(&ifr, 0, sizeof(ifr));
+    snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", name);
+    if (ioctl(fd, SIOCGIFADDR, &ifr) != 0)
+        return 0;                          /* нет IPv4 на интерфейсе */
+    sin = (struct sockaddr_in *)(void *)&ifr.ifr_addr;
+    if (sin->sin_family != AF_INET)
+        return 0;
+    addr = (unsigned long)ntohl(sin->sin_addr.s_addr);
+    if ((addr >> 24) == 127UL)
+        return 0;                          /* loopback 127/8 не подсказываем */
+
+    memset(&ifr, 0, sizeof(ifr));
+    snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), "%s", name);
+    if (ioctl(fd, SIOCGIFNETMASK, &ifr) != 0)
+        return 0;
+    sin = (struct sockaddr_in *)(void *)&ifr.ifr_netmask;
+    if (sin->sin_family != AF_INET)
+        return 0;
+    mask = (unsigned long)ntohl(sin->sin_addr.s_addr);
+    if (mask == 0)
+        return 0;                          /* маска не задана — подсказка бесполезна */
+
+    pfx = choice_mask_prefix(mask);
+    return choice_format_cidr(out, outsz, addr, pfx);
+}
+
+/* Подсеть (dev, cidr) уже собрана? Дедуп нужен, когда ioctl и `ip` дают одно
+ * и то же. */
+static int subnet_present(const choice_set *cs, const char *dev, const char *cidr)
+{
+    size_t i;
+    for (i = 0; i < cs->n_subnets; i++)
+        if (!strcmp(cs->subnets[i].field, dev) && !strcmp(cs->subnets[i].value, cidr))
+            return 1;
+    return 0;
+}
+
+/* Основной путь: адреса/префиксы через ioctl по интерфейсам из netdir. */
+static void collect_subnets_ioctl(choice_set *cs, int fd, const char *netdir)
+{
+    DIR *d;
+    struct dirent *de;
+
+    if (!netdir)
+        return;
+    d = opendir(netdir);
+    if (!d)
+        return;                            /* нет /sys/class/net — не ошибка */
+    while ((de = readdir(d)) != NULL) {
+        char cidr[80];
+        if (de->d_name[0] == '.')
+            continue;
+        if (cs->n_subnets >= CHOICE_MAX_SUBNETS)
+            break;
+        if (!iface_ipv4(fd, de->d_name, cidr, sizeof(cidr)))
+            continue;
+        item_push(cs->subnets, &cs->n_subnets, CHOICE_MAX_SUBNETS, de->d_name, cidr);
+    }
+    closedir(d);
+}
+
+/* Дополнение: `ip -4 -o addr show`, если утилита найдётся. Не обязательно —
+ * без неё всё уже собрано через ioctl; stderr глушим, наличие проверяем
+ * через `command -v` (иначе несуществующая утилита в некоторых оболочках
+ * оставляет читателя popen() ждать вечно). */
+static void collect_subnets_ip(choice_set *cs)
 {
     FILE *p;
     char line[512];
 
-    if (!cs)
-        return;
-    /* `ip` есть не везде; в busybox тоже есть `ip -o addr show`. Без `command -v`
-     * несуществующая утилита в некоторых оболочках оставляет читателя popen()
-     * ждать вечно, поэтому проверяем наличие первым делом. stderr глушим, чтобы
-     * «not found» не сыпалось в лог агента. */
     p = popen("command -v ip >/dev/null 2>&1 && ip -4 -o addr show 2>/dev/null", "r");
     if (!p)
         return;
@@ -501,10 +629,32 @@ void collect_subnets(choice_set *cs)
         char subnet[80], dev[64];
         if (cs->n_subnets >= CHOICE_MAX_SUBNETS)
             break;
-        if (choice_parse_dev(line, subnet, sizeof(subnet), dev, sizeof(dev)))
-            item_push(cs->subnets, &cs->n_subnets, CHOICE_MAX_SUBNETS, dev, subnet);
+        if (!choice_parse_dev(line, subnet, sizeof(subnet), dev, sizeof(dev)))
+            continue;
+        if (subnet_present(cs, dev, subnet))
+            continue;                      /* уже собрано через ioctl */
+        item_push(cs->subnets, &cs->n_subnets, CHOICE_MAX_SUBNETS, dev, subnet);
     }
     (void)pclose(p);
+}
+
+void collect_subnets(choice_set *cs, const char *netdir)
+{
+    int fd;
+
+    if (!cs)
+        return;
+
+    /* Основной путь не зависит от внешних утилит: у демона PATH урезан
+     * (Entware: нет /opt/sbin, /opt/bin), да и iproute2 может отсутствовать. */
+    fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd >= 0) {
+        collect_subnets_ioctl(cs, fd, netdir);
+        close(fd);
+    }
+
+    /* Если `ip` всё-таки есть — добираем то, чего не видно через ioctl. */
+    collect_subnets_ip(cs);
 }
 
 void collect_used(choice_set *cs, const char *conf_path, const susanin_config *cfg)
@@ -784,7 +934,7 @@ size_t wc_write_json_src(const susanin_config *cfg, const char *conf_path,
     if (src & WC_SRC_IFACES)
         collect_ifaces(cs, netdir);
     if (src & WC_SRC_SUBNETS)
-        collect_subnets(cs);
+        collect_subnets(cs, netdir);
     if (src & WC_SRC_USED)
         collect_used(cs, conf_path, cfg);
     if (src & WC_SRC_LISTS)
