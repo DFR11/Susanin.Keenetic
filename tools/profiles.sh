@@ -170,9 +170,20 @@ up() {
             "$IPB" route replace default dev "$_eg" table "$_tb" 2>/dev/null || true
             "$IPB" rule del fwmark "$_mk" lookup "$_tb" 2>/dev/null || true
             "$IPB" rule add fwmark "$_mk" lookup "$_tb" 2>/dev/null || true
+            # Метку ставим ТОЛЬКО когда есть и живой интерфейс, и правило, и
+            # маршрут в таблице. Иначе помеченный пакет уйдёт по чужой политике
+            # (например, на основной VPN Keenetic) — именно так выглядел баг
+            # «профиль есть, а трафик идёт через основной интерфейс».
+            if "$IPB" rule show 2>/dev/null | grep -q "fwmark $_mk lookup $_tb" &&
+               "$IPB" route show table "$_tb" 2>/dev/null | grep -q '^default'; then
+                "$IPT" -t mangle -A "$CHAIN" -m set --match-set "$_sn" dst \
+                       -m mark --mark 0x0 -j MARK --set-mark "$_mk" 2>/dev/null || true
+            else
+                echo "[profiles] $_nm: нет правила/маршрута для mark $_mk table $_tb — профиль пропущен"
+            fi
+        else
+            echo "[profiles] $_nm: egress '${_eg:-не задан}' не найден — профиль пропущен (метка не ставится)"
         fi
-        "$IPT" -t mangle -A "$CHAIN" -m set --match-set "$_sn" dst \
-               -m mark --mark 0x0 -j MARK --set-mark "$_mk" 2>/dev/null || true
         _i=$((_i + 1))
     done
 
@@ -226,14 +237,32 @@ status() {
     _i=1
     while [ "$_i" -le "$MAXP" ]; do
         _nm=$(prof_name "$_i")
-        if [ -z "$_nm" ]; then _i=$((_i + 1)); continue; fi
-        _eg=$(cfg "profile${_i}_egress")
-        _tb=$(cfg "profile${_i}_table"); [ -n "$_tb" ] || _tb=$((200 + _i))
-        _mk=$(cfg "profile${_i}_mark");   [ -n "$_mk" ] || _mk=0x40000000
+        # ВАЖНО: счётчик увеличивается на КАЖДОЙ итерации. Раньше при заданном
+        # профиле цикл не двигался и status печатал одну и ту же строку без конца.
+        _i=$((_i + 1))
+        [ -n "$_nm" ] || continue
+        _pv=$((_i - 1))
+        _eg=$(cfg "profile${_pv}_egress")
+        _tb=$(cfg "profile${_pv}_table"); [ -n "$_tb" ] || _tb=$((200 + _pv))
+        _mk=$(cfg "profile${_pv}_mark");   [ -n "$_mk" ] || _mk=0x40000000
         _sn="$SETPFX$(san "$_nm")"
         _c=$("$IPSET" list "$_sn" 2>/dev/null | grep -cE '^[0-9]+\.')
-        echo "  $_nm: egress=${_eg:-?} table=$_tb mark=$_mk set=$_sn entries=${_c:-0}"
+        _live=""
+        for _e in $(printf '%s' "$_eg" | tr ',' ' '); do
+            [ -e "/sys/class/net/$_e" ] && { _live="$_e"; break; }
+        done
+        if [ -n "$_live" ]; then _egs="egress=${_eg:-?} (живой: $_live)"; else _egs="egress=${_eg:-?} (НЕТ живого интерфейса!)"; fi
+        _rule=$("$IPB" rule show 2>/dev/null | grep -c "fwmark $_mk lookup $_tb")
+        _rt=$("$IPB" route show table "$_tb" 2>/dev/null | grep -c '^default')
+        _mr=$("$IPT" -t mangle -S "$CHAIN" 2>/dev/null | grep -c -- "--match-set $_sn dst")
+        echo "  $_nm: $_egs table=$_tb mark=$_mk set=$_sn entries=${_c:-0}"
+        echo "      ip rule=$([ "${_rule:-0}" -gt 0 ] && echo есть || echo НЕТ), default в таблице=$([ "${_rt:-0}" -gt 0 ] && echo есть || echo НЕТ), правило mark=$([ "${_mr:-0}" -gt 0 ] && echo есть || echo НЕТ)"
     done
+    # Метки профилей могут совпасть с чужой политикой (Keenetic и т.п.) — покажем все
+    # правила с нашими метками, чтобы это было видно в отчёте.
+    _pfx=$("$IPB" rule show 2>/dev/null | grep -c 'fwmark 0x4')
+    [ "${_pfx:-0}" -gt 1 ] && echo "  внимание: правил с метками 0x4… — $_pfx (проверьте, нет ли конфликта с политиками Keenetic)"
+    return 0
 }
 
 case "${1:-}" in

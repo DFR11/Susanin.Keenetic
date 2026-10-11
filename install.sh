@@ -650,6 +650,14 @@ if [ -d "$DIR/www" ]; then
     cp -r "$DIR/www/." "$PREFIX/www/" 2>/dev/null || true
     say "web assets installed: $PREFIX/www"
 fi
+# Документация — в /opt/susanin/docs (в поставке лежит в docs/), чтобы её было
+# где найти на устройстве: TESTBUILD, TROUBLESHOOTING, USER_GUIDE, DEPLOY, XRAY.
+if [ -d "$DIR/docs" ]; then
+    mkdir -p "$PREFIX/docs"
+    cp -r "$DIR/docs/." "$PREFIX/docs/" 2>/dev/null || true
+    say "docs installed: $PREFIX/docs (TESTBUILD, TROUBLESHOOTING, USER_GUIDE)"
+fi
+
 _s95=$(find_file S95susanin-web) || _s95=""
 if [ -n "$_s95" ]; then
     cp "$_s95" "$INITD/S95susanin-web"

@@ -5,6 +5,8 @@
  * (web_token) либо без него — тогда с предупреждением. Отдаёт:
  *   GET /api/status   — JSON-снимок (read-only, ops_status_json)
  *   GET /api/config   — текущие параметры конфига (секреты маскируются)
+ *   GET /api/choices  — «известные системе» значения для панели (интерфейсы,
+ *                       подсети, таблицы, метки, файлы списков профилей)
  *   POST /api/config  — правка существующих ключей (form-urlencoded)
  *   GET /api/list?name=vpn_always|vpn_never — содержимое списка (read-only)
  *   GET /<path>       — статика из SUSANIN_WWW_ROOT
@@ -14,6 +16,7 @@
 #include "web.h"
 #include "ops.h"
 #include "log.h"
+#include "web_choices.h"
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -989,6 +992,36 @@ static const char *list_path_from_query(const susanin_config *cfg, const char *q
     return NULL;
 }
 
+/* GET /api/choices — «известные системе» значения для панели (интерфейсы,
+ * подсети, таблицы, метки, файлы списков профилей). Ничего не найдено —
+ * пустые массивы и код 200; отказ любого источника не является ошибкой.
+ * Если JSON не влез в буфер, wc_write_json() вернёт 0 — тогда отдаём пустой
+ * объект: битый JSON панель не разберёт. */
+static void serve_choices(int fd, const susanin_config *cfg, int head_only)
+{
+    size_t cap = MAX_BODY * 2;
+    char *jb = malloc(cap);
+    size_t n;
+
+    if (!jb) {
+        reply_text(fd, 500, "oom", head_only);
+        return;
+    }
+    n = wc_write_json(cfg, ops_default_conf_path(), "/sys/class/net",
+                      wc_list_dir(), jb, cap);
+    if (n == 0) {
+        static const char empty[] =
+            "{\"ifaces\":[],\"subnets\":[],\"tables\":[],\"used_marks\":[],"
+            "\"marks\":[],\"lists\":[],\"list_dir\":\"\",\"free_mark_index\":0}";
+        reply(fd, 200, "application/json; charset=utf-8", empty,
+              sizeof(empty) - 1, head_only);
+        free(jb);
+        return;
+    }
+    reply(fd, 200, "application/json; charset=utf-8", jb, n, head_only);
+    free(jb);
+}
+
 static void handle_action(int fd, const susanin_config *cfg, const char *target,
                           const char *query, const char *body)
 {
@@ -1267,6 +1300,10 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
         ops_config_json(cfg, ops_default_conf_path(), jb, MAX_BODY);
         reply(fd, 200, "application/json; charset=utf-8", jb, strlen(jb), head_only);
         free(jb);
+        return;
+    }
+    if (!strcmp(target, "/api/choices")) {
+        serve_choices(fd, cfg, head_only);
         return;
     }
     if (!strcmp(target, "/api/log")) {

@@ -157,6 +157,12 @@ for f in "$DIR"/*.sh; do
 done
 chmod +x "$PREFIX/tools/"*.sh 2>/dev/null || true
 
+# Документация обновляется вместе с пакетом (см. install.sh).
+if [ -n "${DIR:-}" ] && [ -d "$DIR/docs" ]; then
+    mkdir -p "$PREFIX/docs"
+    cp -r "$DIR/docs/." "$PREFIX/docs/" 2>/dev/null || true
+fi
+
 # Короткий вызов `susanin …`: симлинк в /opt/bin (не трогаем чужой файл с этим именем).
 if [ -d /opt/bin ] && [ ! -e /opt/bin/susanin ]; then
     ln -s "$PREFIX/tools/susanin.sh" /opt/bin/susanin 2>/dev/null \

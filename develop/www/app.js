@@ -1,8 +1,10 @@
 /* Susanin.Keenetic — веб-панель (W2/W3, без внешних зависимостей).
- * Данные: GET /api/status, GET /api/list?name=..., GET /api/log. Токен хранится
- * в localStorage и передаётся заголовком X-Auth-Token (либо один раз через
- * ?token=...). Списки vpn_always/vpn_never редактируются перетаскиванием между
- * колонками (или стрелкой на записи — для touch-устройств). */
+ * Данные: GET /api/status, GET /api/list?name=..., GET /api/log,
+ * GET /api/choices (известные системе интерфейсы/подсети/таблицы/метки/файлы
+ * списков — их подставляет www/config.js в выпадающие списки полей).
+ * Токен хранится в localStorage и передаётся заголовком X-Auth-Token (либо
+ * один раз через ?token=...). Списки vpn_always/vpn_never редактируются
+ * перетаскиванием между колонками (или стрелкой на записи — для touch). */
 (function () {
   'use strict';
 
@@ -26,6 +28,27 @@
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
     });
   };
+
+  /* --- «известные системе» значения (один запрос на всю панель) ---
+   * config.js читает window.susaninChoices при отрисовке полей. Запрос делаем
+   * ровно один раз при открытии панели и кэшируем; ошибка/отсутствие токена —
+   * тихий фолбэк: подсказок нет, поля работают как раньше (ручной ввод).
+   * Событие susanin:choices нужно на случай, когда config.js отрисовался
+   * раньше, чем пришёл ответ. */
+  window.susaninChoices = null;
+
+  function loadChoices() {
+    return api('/api/choices').then(function (t) {
+      var d;
+      try { d = JSON.parse(t); } catch (e) { return null; }
+      if (!d || typeof d !== 'object') return null;
+      window.susaninChoices = d;
+      try {
+        document.dispatchEvent(new CustomEvent('susanin:choices', { detail: d }));
+      } catch (e) { /* старый браузер — config.js просто не перерисует */ }
+      return d;
+    }).catch(function () { return null; });
+  }
 
 
   function api(path) {
@@ -368,6 +391,7 @@
   function loadAll() { load(); loadLists(); }
 
   loadAll();
+  loadChoices();   /* один раз: подсказки для полей конфигурации (config.js) */
   /* Список НЕ переопрашиваем таймером — иначе перерисовка мешает
    * перетаскиванию; обновляется по действию и вручную ("Обновить"). */
   window.setInterval(load, 5000);

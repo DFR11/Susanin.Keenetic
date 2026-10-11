@@ -8,12 +8,12 @@ VARDIR = $(PREFIX)/susanin/var
 
 SRCS = src/main.c src/config.c src/discover.c src/conntrack.c src/state.c \
        src/backend.c src/classifier.c src/health.c src/engine.c src/log.c src/ops.c \
-       src/vpn_always.c src/vpn_never.c src/web.c src/udp_relay.c src/cdn.c \
-       src/dns_sniff.c src/profiles.c
+       src/vpn_always.c src/vpn_never.c src/web.c src/web_choices.c \
+       src/udp_relay.c src/cdn.c src/dns_sniff.c src/profiles.c
 OBJS = $(SRCS:.c=.o)
 
 TARGET = susanin-agent
-TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_state tests/test_backend_value tests/test_classifier_key
+TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_classifier_key
 SAMPLES = testdata/nf_conntrack.samples
 # Объекты для тестов, которые включают .c-файл в свой TU (тогда его .o линковать нельзя).
 TEST_OBJS = $(filter-out src/main.o,$(OBJS))
@@ -28,12 +28,16 @@ $(TARGET): $(OBJS)
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+# web.c включает заголовок модуля «известных значений» — пересобираем при правке.
+src/web.o src/web_choices.o: src/web_choices.h
+
 # Тесты (хост-компилятор; в кросс-сборку и поставку не входят).
 test: $(TESTS)
 	./tests/test_conntrack $(SAMPLES)
 	./tests/test_config
 	./tests/test_ops
 	./tests/test_web_list
+	./tests/test_web_choices
 	./tests/test_state
 	./tests/test_backend_value
 	./tests/test_classifier_key
@@ -54,12 +58,19 @@ tests/test_conntrack: tests/test_conntrack.c src/conntrack.c src/conntrack.h
 tests/test_config: tests/test_config.c src/config.c src/config.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_config.c src/config.c
 
-# test_ops включает src/ops.c, test_web_list — src/web.c: их .o исключаем из линковки.
+# test_ops включает src/ops.c, test_web_list — src/web.c: их .o из линковки
+# исключаем, иначе дубли символов. src/web_choices.o, наоборот, ЛИНКУЕМ:
+# web.c, включённый в TU теста, вызывает wc_list_dir()/wc_write_json().
 tests/test_ops: tests/test_ops.c src/ops.c $(TEST_OBJS)
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_ops.c $(filter-out src/ops.o,$(TEST_OBJS))
 
-tests/test_web_list: tests/test_web_list.c src/web.c $(TEST_OBJS)
-	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_web_list.c $(filter-out src/web.o,$(TEST_OBJS))
+tests/test_web_list: tests/test_web_list.c src/web.c src/web_choices.c $(TEST_OBJS)
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_web_list.c \
+		$(filter-out src/web.o,$(TEST_OBJS))
+
+# test_web_choices включает src/web_choices.c: из линковки его .o исключаем.
+tests/test_web_choices: tests/test_web_choices.c src/web_choices.c src/web_choices.h
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_web_choices.c
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(CONFDIR) $(DESTDIR)$(VARDIR)
