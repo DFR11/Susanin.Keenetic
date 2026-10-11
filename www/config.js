@@ -469,7 +469,7 @@
     var c = choices();
     var groups = [];
     if (!c) return groups;
-    if (kind === 'iface') return ifaceGroups();
+    if (kind === 'iface' || kind === 'ifacelist') return ifaceGroups();
     if (kind === 'table') {
       groups.push({ label: 'Таблицы маршрутизации', items: (c.tables || []).map(function (t) {
         return { value: String(t.id), note: t.used ? 'занята' : 'свободна' };
@@ -654,6 +654,7 @@
     add.className = 'chips-add';
     var sel = buildChoiceSelect(groups, { placeholder: '＋ выбрать известный…' });
     sel.disabled = !groups.length;
+
     if (!groups.length) sel.title = 'агент не отдал список известных значений';
     add.appendChild(sel);
 
