@@ -83,9 +83,16 @@ build_one() { # build_one <target-arch> <binary>
     chmod 755 "$_data/opt/susanin/bin/susanin-agent"
 
     # Единый список поставки (тот же, что у CI-архива и develop): packaging/manifest.txt.
-    grep -vE '^[[:space:]]*(#|$)' "$SRC/packaging/manifest.txt" | \
+    # Читаем через redirect (не pipe): иначе ошибка ниже не выйдет из функции.
+    # Отсутствующий в манифесте файл — это ОШИБКА, а не «молча пропустить».
     while read -r _cls _src; do
+        case "${_cls:-}" in ''|'#'*) continue ;; esac
         [ -n "${_src:-}" ] || continue
+        if [ ! -e "$SRC/$_src" ]; then
+            echo "make-ipk: в манифесте $_src, но файла нет (проверьте packaging/manifest.txt)" >&2
+            rm -rf "$_work"
+            return 1
+        fi
         case "$_cls" in
             tool)   cp "$SRC/$_src" "$_data/opt/susanin/tools/" ;;
             init)   cp "$SRC/$_src" "$_data/opt/etc/init.d/$(basename "$_src")" ;;
@@ -94,9 +101,12 @@ build_one() { # build_one <target-arch> <binary>
             cfg)    cp "$SRC/$_src" "$_data/opt/susanin/share/susanin.conf.example" ;;
             www)    cp -r "$SRC/$_src/." "$_data/opt/susanin/www/" ;;
             root)   : ;;   # install.sh/bootstrap.sh нужны tar-архиву, не .ipk
-            *)      echo "make-ipk: неизвестный класс '$_cls' в манифесте" >&2; exit 1 ;;
+            *)
+                echo "make-ipk: неизвестный класс '$_cls' в манифесте" >&2
+                rm -rf "$_work"
+                return 1 ;;
         esac
-    done || exit 1
+    done < "$SRC/packaging/manifest.txt"
     find "$_data/opt/etc/init.d" -type f -exec chmod 755 {} \; 2>/dev/null || true
     find "$_data/opt/susanin/tools" -type f -name '*.sh' -exec chmod 755 {} \; 2>/dev/null || true
 

@@ -2,8 +2,8 @@
 # check-shipping.sh — единый список поставки (packaging/manifest.txt) против
 # фактического содержимого пакетов. Проверяет:
 #   1) все файлы из манифеста существуют в репозитории;
-#   2) каждый файл/каталог из tools/ — либо в манифесте, либо в
-#      packaging/dev-only.txt (иначе он молча «уедет» или «не уедет» в поставку);
+#   2) каждый файл из tools/ — либо в манифесте, либо в packaging/dev-only.txt;
+#   2b) каждый файл из init/entware/ — тоже;
 #   3) если задан .ipk — в нём есть всё из манифеста и нет dev-only-скриптов;
 #   4) если задан каталог develop — там есть всё из манифеста (в его раскладке).
 #
@@ -57,10 +57,19 @@ for f in "$SRC"/tools/*; do
     [ -f "$f" ] || continue
     b=$(basename "$f")
     if grep -qE "^tool[[:space:]]+tools/${b}$" "$LIST"; then continue; fi
-    if [ -f "$DEVONLY" ] && grep -qE "^${b}[[:space:]]" "$DEVONLY"; then continue; fi
+    if [ -f "$DEVONLY" ] && grep -qE "^tools/${b}[[:space:]]" "$DEVONLY"; then continue; fi
     fail "tools/$b не учтён ни в manifest.txt, ни в dev-only.txt"
 done
-note "dev-only: $([ -f "$DEVONLY" ] && grep -cE '^[a-z].*[[:space:]]' "$DEVONLY" || echo 0) файл(ов)"
+note "dev-only: $([ -f "$DEVONLY" ] && grep -cE '^(tools|init)/' "$DEVONLY" || echo 0) запис(ей)"
+
+echo "== 2b. init/entware/: каждый файл либо поставляется, либо dev-only =="
+for f in "$SRC"/init/entware/*; do
+    [ -f "$f" ] || continue
+    b=$(basename "$f")
+    if grep -qE "^init[[:space:]]+init/entware/${b}$" "$LIST"; then continue; fi
+    if [ -f "$DEVONLY" ] && grep -qE "^init/entware/${b}[[:space:]]" "$DEVONLY"; then continue; fi
+    fail "init/entware/$b не учтён ни в manifest.txt, ни в dev-only.txt"
+done
 
 echo "== 3. .ipk =="
 if [ "$CHK_IPK" = 1 ]; then

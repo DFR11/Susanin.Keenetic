@@ -1,7 +1,12 @@
 # Единый список того, что ПОСТАВЛЯЕТСЯ (0.4.0.RC1).
 #
 # Читают: tools/make-ipk.sh (.ipk), tools/stage-release.sh (CI tar-архив),
-# tools/check-shipping.sh (проверка, что ничего не забыто и лишнего не уехало).
+# tools/repack-develop.sh и tools/check-shipping.sh (проверка, что ничего не
+# забыто и лишнего не уехало).
+#
+# ВАЖНО: сюда попадают только файлы, которые есть в git. Приватные рабочие
+# документы (/TESTBUILD.md, /STATUS.md, /PLAN.md, docs/RECON.md) в манифест
+# НЕ включаются, иначе чистый чекаут не соберётся.
 #
 # Формат: <класс> <путь от корня репозитория>
 #   tool  — скрипты для устройства      -> /opt/susanin/tools/  (в архиве: корень)
@@ -12,8 +17,9 @@
 #   www   — статика панели (каталог)    -> /opt/susanin/www/    (в архиве: www/)
 #   root  — файлы только для tar-архива (в .ipk не нужны)
 #
-# Всё, что лежит в tools/, но здесь не перечислено, обязано быть в
-# packaging/dev-only.txt с причиной — это проверяет tests/test-shipping.sh.
+# Всё, что лежит в tools/ или init/entware/, но здесь не перечислено, обязано
+# быть в packaging/dev-only.txt с причиной — это проверяет
+# tools/check-shipping.sh (шаги 2 и 2b).
 
 tool    tools/datapath.sh
 tool    tools/susanin.sh
@@ -34,7 +40,6 @@ doc     USER_GUIDE.md
 doc     TROUBLESHOOTING.md
 doc     DEPLOY.md
 doc     XRAY.md
-doc     TESTBUILD.md
 doc     CHANGELOG.md
 doc     LICENSE
 

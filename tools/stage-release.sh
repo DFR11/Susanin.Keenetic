@@ -32,6 +32,9 @@ chmod 755 "$OUT/susanin-agent"
 
 grep -vE '^[[:space:]]*(#|$)' "$MAN" | while read -r cls src; do
     [ -n "${src:-}" ] || continue
+    if [ ! -e "$SRC/$src" ]; then
+        die "в манифесте $src, но файла нет (чистый чекаут? проверьте packaging/manifest.txt)"
+    fi
     case "$cls" in
         tool|init)  cp "$SRC/$src" "$OUT/$(basename "$src")" ;;
         doc)        cp "$SRC/$src" "$OUT/docs/$(basename "$src")" ;;

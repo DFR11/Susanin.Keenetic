@@ -509,6 +509,11 @@ cd /opt/tmp
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
 ```
 
+> Имя dev-архива (`develop/susanin-keenetic-0.4.0-dev.tar.gz`) — **стабильное**,
+> оно не меняется от версии к версии: так не ломаются ссылки и команды, которые
+> уже раздали тестерам. Фактическая версия внутри архива — в
+> `susanin-agent version` (сейчас `0.4.0.RC1`).
+
 Флаги: `--channel dev|stable`, `--version`, `--file`, `--url`, `--check`,
 `--dry-run`, `--with-xray`, `--verify`, `--tmp DIR`; остальные (`--yes`, `--arch`,
 `--egress`, `--lan`, `--force`, `--deps` и т.д.) передаются в `install.sh`.
