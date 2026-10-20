@@ -2,6 +2,7 @@
 #include "ops.h"
 #include "backend.h"
 #include "cdn.h"
+#include "classifier.h"
 #include "log.h"
 #include "state.h"
 #include "vpn_always.h"
@@ -363,6 +364,27 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
  * Для домена (и `*.домен`) сбрасываются apex + типовые/пробные поддомены
  * (best-effort: DNS не даёт перечислить все поддомены зоны). Файлы
  * vpn_always/vpn_never не изменяются. */
+/* Снять из состояния и susanin_ok_net все сети, покрывающие адрес.
+ * Инцидент 2026-10-16 (reg.ru): media-агрегация утащила 194.67.72.0/24 в VPN,
+ * а reset/forget показывал «removed=0» — покрывающая сеть оставалась. */
+static int reset_covering_nets(const susanin_config *cfg, susanin_state *st,
+                               const char *ip)
+{
+    int k, removed = 0;
+    for (k = st->net.n - 1; k >= 0; k--) {
+        const char *cidr = st->net.v[k].addr;
+        if (!strchr(cidr, '/'))
+            continue;
+        if (!clf_ip_in_cidr(ip, cidr))
+            continue;
+        backend_net_del(cfg, cidr);
+        state_remove(&st->net, cidr);
+        printf("[susanin] reset %s: снят покрывающий префикс %s\n", ip, cidr);
+        removed++;
+    }
+    return removed;
+}
+
 int ops_reset(const susanin_config *cfg, const char *arg)
 {
     const char *path = "/opt/susanin/var/susanin.state";
@@ -434,7 +456,10 @@ int ops_reset(const susanin_config *cfg, const char *arg)
             backend_ipset_del(cfg, udp, 0, ips[i]);
             backend_ipset_del(cfg, udp, 1, ips[i]);
         }
-        backend_set_del(cfg, "susanin_never", ips[i]);
+        /* reset/forget НЕ снимает «напрямую»: иначе адрес из vpn_never снова
+         * уедет в VPN при обучении. Удаляем только кэш обучения и покрывающие
+         * префиксы (нормальная pin-запись списка остаётся в наборе). */
+        reset_covering_nets(cfg, &st, ips[i]);
         backend_ct_flush_ip(ips[i]);
         printf("[susanin] reset %s%s: %s removed=%d, ipsets cleared, conntrack flushed\n",
                zone ? "zone " : "", arg, ips[i], removed);

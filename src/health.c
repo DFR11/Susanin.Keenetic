@@ -3,6 +3,7 @@
 #include "log.h"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/ip.h>
 #include <netinet/ip_icmp.h>
 #include <netinet/in.h>
@@ -11,6 +12,7 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef SO_MARK
@@ -38,6 +40,33 @@ static uint16_t csum(const void *data, int len)
     return (uint16_t)~sum;
 }
 
+/* Случайный ICMP Echo ID. Раньше ID был привязан к PID (getpid() & 0xffff):
+ * при переиспользовании PID он повторялся, а постоянный ID позволял залипшему
+ * NAT-состоянию на промежуточном сервере каскада «узнавать» наши проверки и не
+ * отвечать (отчёт тестера: PID 701 => Echo ID 701, ответов нет, помог только
+ * рестарт). ID должен быть новым, не связанным с PID и не повторяться. */
+static uint16_t probe_echo_id(void)
+{
+    unsigned char b[2];
+    uint16_t id;
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t n = read(fd, b, sizeof(b));
+        close(fd);
+        if (n != (ssize_t)sizeof(b)) {
+            b[0] = 0;
+            b[1] = 0;
+        }
+    } else {
+        b[0] = 0;
+        b[1] = 0;
+    }
+    id = (uint16_t)(((uint16_t)b[0] << 8) | b[1]);
+    if (id == 0)
+        id = (uint16_t)((getpid() ^ (unsigned)time(NULL)) & 0xffff);
+    return id;
+}
+
 static int probe_one(const char *dst, const char *src, const char *dev,
                      unsigned long mark)
 {
@@ -47,7 +76,7 @@ static int probe_one(const char *dst, const char *src, const char *dev,
     char packet[64];
     char rbuf[512];
     int n;
-    uint16_t id = (uint16_t)(getpid() & 0xffff);
+    uint16_t id = probe_echo_id();
     struct timeval tv;
 
     fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
@@ -240,6 +269,37 @@ int health_probe_via_socks(const susanin_config *c, const char *dst, int port,
     if (r < 2 || rep[0] != 0x05)
         return 0;
     return rep[1] == 0x00 ? 1 : 0;
+}
+
+/* Страховочная TCP-проба ЧЕРЕЗ egress: ICMP может молчать из-за залипшего
+ * NAT-состояния на промежуточном сервере, хотя туннель рабочий. Проверяем
+ * TCP-соединение с тем же адресом пробы и той же меткой/интерфейсом. */
+int health_probe_tcp_egress(const susanin_config *c, const char *dev,
+                            const char *src, int port)
+{
+    char buf[512], *save = NULL, *tok;
+    char srcbuf[64];
+    const char *psrc = src;
+    if (!psrc || !psrc[0]) {
+        char *comma;
+        snprintf(srcbuf, sizeof(srcbuf), "%s", c->egress_address);
+        comma = strchr(srcbuf, ',');
+        if (comma)
+            *comma = '\0';
+        psrc = srcbuf;
+    }
+    if (port <= 0)
+        port = c->health_tcp_port > 0 ? c->health_tcp_port : 443;
+    snprintf(buf, sizeof(buf), "%s", c->health_probe);
+    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        while (*tok == ' ' || *tok == '\t')
+            tok++;
+        if (!*tok)
+            continue;
+        if (probe_tcp(tok, port, psrc, dev, c->mark_test) > 0)
+            return 1;
+    }
+    return 0;
 }
 
 /* Прямая проба dst:port (без egress/метки — идёт по main, т.е. напрямую).

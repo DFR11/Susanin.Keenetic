@@ -104,6 +104,7 @@ int clf_port_excluded(const susanin_config *cfg, unsigned port)
     return port_excluded(cfg, port);
 }
 int clf_is_private_dst(const char *dst) { return is_private_dst(dst, NULL); }
+int clf_ip_in_cidr(const char *ip, const char *cidr) { return ip_in_cidr(ip, cidr); }
 
 /* rate cache (two-sample deltas) */
 #define RCAP 2048
@@ -479,6 +480,87 @@ static int media_port(const susanin_config *cfg, unsigned p)
     return 0;
 }
 
+/* M2: пороги media_min_rate/media_min_age раньше были объявлены и печатались,
+ * но в коде НЕ проверялись: «медиа» считалась любая загрузка на портах
+ * media_ports с ответом >= media_min_bytes, и два адреса утаскивали в VPN всю
+ * /24 (инцидент reg.ru 2026-10-16: HTML шёл, стили/картинки — нет).
+ * Здесь короткая таблица кандидатов: агрегируем только если поток прожил
+ * media_min_age секунд и держит скорость не ниже media_min_rate. */
+#define MCAP 256
+typedef struct {
+    char key[192];
+    time_t first, last;
+    unsigned long rb;
+} mslot;
+static mslot mc[MCAP];
+static int mc_n = 0;
+
+static mslot *mc_find(const char *key)
+{
+    int i;
+    for (i = 0; i < mc_n; i++)
+        if (strcmp(mc[i].key, key) == 0)
+            return &mc[i];
+    return NULL;
+}
+
+static mslot *mc_store(const char *key, time_t now, unsigned long rb)
+{
+    mslot *s;
+    if (mc_n >= MCAP) {
+        int i, oldest = 0;
+        for (i = 1; i < mc_n; i++)
+            if (mc[i].last < mc[oldest].last)
+                oldest = i;
+        s = &mc[oldest];
+    } else {
+        s = &mc[mc_n++];
+    }
+    snprintf(s->key, sizeof(s->key), "%s", key);
+    s->first = now;
+    s->last = now;
+    s->rb = rb;
+    return s;
+}
+
+/* 1 = возраст и скорость подтверждены (можно агрегировать). Пороги выключены —
+ * сразу 1 (поведение как до правки). */
+static int media_quorum(const susanin_config *cfg, const ct_flow *f, time_t now)
+{
+    char key[192];
+    mslot *s;
+    long age, dt;
+    unsigned long rate;
+    if (cfg->media_min_age <= 0 && cfg->media_min_rate <= 0)
+        return 1;
+    flow_key(f, key, sizeof(key));
+    s = mc_find(key);
+    if (s && now - s->last > 300) {
+        /* Запись «протухла» (поток не наблюдался >5 мин): возраст и скорость по
+         * такому разрыву недостоверны — считаем кандидата заново. */
+        s->first = now;
+        s->last = now;
+        s->rb = f->rb;
+        return 0;
+    }
+    if (!s) {
+        mc_store(key, now, f->rb);
+        return 0;
+    }
+    age = (long)(now - s->first);
+    dt = (long)(now - s->last);
+    if (dt < 1)
+        dt = 1;
+    rate = udelta(f->rb, s->rb) / (unsigned long)dt;
+    s->last = now;
+    s->rb = f->rb;
+    if (age < (long)cfg->media_min_age)
+        return 0;
+    if (cfg->media_min_rate > 0 && rate < (unsigned long)cfg->media_min_rate)
+        return 0;
+    return 1;
+}
+
 static void media_aggregate(classifier_ctx *ctx, const ct_flow *f)
 {
     const susanin_config *cfg = ctx->cfg;
@@ -495,6 +577,18 @@ static void media_aggregate(classifier_ctx *ctx, const ct_flow *f)
         return;
     if (f->ob > 0 && f->rb < (unsigned long)cfg->media_ratio * f->ob)
         return;
+    /* Пороги «настоящего медиа»: возраст и устойчивая скорость (см. выше). */
+    if (!media_quorum(cfg, f, time(NULL))) {
+        slogf(SL_DEBUG, "MEDIA: %s ждёт возраст/скорость (age>=%ds, rate>=%d B/s)",
+              f->dst, cfg->media_min_age, cfg->media_min_rate);
+        return;
+    }
+    /* vpn_never приоритетнее: иначе адрес из «напрямую» уедет в VPN вместе с
+     * соседями по /24 (тот же guard, что в cdn_aggregate()). */
+    if (backend_set_test(cfg, "susanin_never", f->dst) == 0) {
+        slogf(SL_DEBUG, "MEDIA: не агрегирую %s — адрес в vpn_never", f->dst);
+        return;
+    }
     if (inet_pton(AF_INET, f->dst, &a) != 1)
         return;
     pre = cfg->media_prefix_max > 0 ? cfg->media_prefix_max : 24;

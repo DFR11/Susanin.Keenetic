@@ -220,6 +220,90 @@ static void merge_lan_servers(const susanin_config *c, susanin_discovery *d)
     }
 }
 
+/* OpenConnect-сервер на этом роутере: /var/run/ocserv/ocserv.conf создаётся
+ * штатной службой. Процесс на Keenetic может не называться ocserv, поэтому
+ * определяем по файлу (в discovery нет вызова iptables). */
+static int ocserv_alive(void)
+{
+    return access("/var/run/ocserv/ocserv.conf", R_OK) == 0;
+}
+
+/* Пул клиентов OpenConnect из того же конфига (ipv4-network=172.16.5.0/24). */
+static int ocserv_pool(char *out, size_t n)
+{
+    FILE *f = fopen("/var/run/ocserv/ocserv.conf", "r");
+    char line[256];
+    if (!f)
+        return -1;
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        size_t l;
+        if (strncmp(p, "ipv4-network", 12) != 0)
+            continue;
+        while (*p && *p != '=')
+            p++;
+        if (*p == '=')
+            p++;
+        while (*p == ' ' || *p == '\t')
+            p++;
+        l = strlen(p);
+        while (l && (p[l - 1] == '\n' || p[l - 1] == '\r' || p[l - 1] == ' '))
+            p[--l] = '\0';
+        if (*p) {
+            snprintf(out, n, "%s", p);
+            fclose(f);
+            return 0;
+        }
+    }
+    fclose(f);
+    return -1;
+}
+
+static int csv_has_oc(const char *csv)
+{
+    char buf[256], *save = NULL, *tok;
+    snprintf(buf, sizeof(buf), "%s", csv ? csv : "");
+    for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        while (*tok == ' ' || *tok == '\t')
+            tok++;
+        if (tok[0] == 'o' && tok[1] == 'c')
+            return 1;
+    }
+    return 0;
+}
+
+/* Клиенты OpenConnect должны обрабатываться всегда, пока сервер жив: одиночный
+ * oc0 создаётся по требованию и выпадает из lan_interfaces после `rescan` с
+ * отключённым клиентом (регрессия 2026-10-14 — «часть сайтов висит, status
+ * зелёный»). Держим шаблон 'oc+' и подсеть пула идемпотентно. */
+static void merge_ocserv(const susanin_config *c, susanin_discovery *d)
+{
+    char pool[64], cidr[64];
+    int i;
+    (void)c;
+    if (!ocserv_alive())
+        return;
+    if (!csv_has_oc(d->lan_interfaces)) {
+        /* В КОНЕЦ списка: dns_sniff и DNS-fallback vpn_always берут первый
+         * интерфейс списка. */
+        append_csv(d->lan_interfaces, sizeof(d->lan_interfaces), "oc+");
+        slogf(SL_INFO, "discover: OpenConnect-сервер жив — добавлен 'oc+' в lan_interfaces");
+    }
+    if (ocserv_pool(pool, sizeof(pool)) == 0 && strchr(pool, '/')) {
+        if (!csv_has(d->lan_subnets, pool))
+            append_csv(d->lan_subnets, sizeof(d->lan_subnets), pool);
+        return;
+    }
+    for (i = 0; i < DISC_MAXIF; i++) {
+        char name[32];
+        snprintf(name, sizeof(name), "oc%d", i);
+        if (!iface_exists(name))
+            continue;
+        if (iface_cidr4(name, cidr, sizeof(cidr)) == 0 && !csv_has(d->lan_subnets, cidr))
+            append_csv(d->lan_subnets, sizeof(d->lan_subnets), cidr);
+    }
+}
+
 int discover_defaults(susanin_discovery *d, const susanin_config *c)
 {
     char up[DISC_MAXIF][64], defs[DISC_MAXIF][64];
@@ -242,6 +326,8 @@ int discover_defaults(susanin_discovery *d, const susanin_config *c)
 
     /* qWDTT/серверные туннели как LAN (если заданы и существуют). */
     merge_lan_servers(c, d);
+    /* Клиенты OpenConnect-сервера — держим 'oc+' и подсеть пула. */
+    merge_ocserv(c, d);
 
     /* tproxy: внешний трафик уходит в Xray, egress-интерфейс не используется —
      * оставляем как есть, без предупреждений и подмены. */

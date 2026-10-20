@@ -19,6 +19,13 @@ int health_probe_dev(const susanin_config *c, const char *dev, const char *src,
  * 1 = соединение установилось. */
 int health_probe_tcp_direct(const char *dst, unsigned port, int timeout_ms);
 
+/* Страховочная TCP-проба ЧЕРЕЗ egress (dev, src, метка test): нужна, когда ICMP
+ * не отвечает, а туннель рабочий (залипшее NAT-состояние на промежуточном
+ * сервере каскада по ICMP-ID — отчёт тестера 0.4.0-dev8). 1 = соединение
+ * установилось хотя бы с одним адресом из health_probe. */
+int health_probe_tcp_egress(const susanin_config *c, const char *dev,
+                            const char *src, int port);
+
 /* Проба апстрима Xray через локальный SOCKS5 (режим tproxy): 1 = ok. */
 int health_probe_via_socks(const susanin_config *c, const char *dst, int port,
                            int timeout_ms);

@@ -13,7 +13,7 @@ SRCS = src/main.c src/config.c src/discover.c src/conntrack.c src/state.c \
 OBJS = $(SRCS:.c=.o)
 
 TARGET = susanin-agent
-TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_classifier_key
+TESTS = tests/test_conntrack tests/test_config tests/test_ops tests/test_web_list tests/test_web_choices tests/test_state tests/test_backend_value tests/test_classifier_key tests/test_classifier_media tests/test_web_token
 SAMPLES = testdata/nf_conntrack.samples
 # Объекты для тестов, которые включают .c-файл в свой TU (тогда его .o линковать нельзя).
 TEST_OBJS = $(filter-out src/main.o,$(OBJS))
@@ -41,9 +41,18 @@ test: $(TESTS)
 	./tests/test_state
 	./tests/test_backend_value
 	./tests/test_classifier_key
+	./tests/test_classifier_media
+	./tests/test_web_token
+	sh tests/test-egress-failover.sh
 
 tests/test_state: tests/test_state.c src/state.c src/state.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_state.c src/state.c
+
+# test_web_token включает src/web.c (static token_eq/header_value/cookie_value):
+# .o web исключаем, а web_choices.o линкуем (его вызывают функции web.c).
+tests/test_web_token: tests/test_web_token.c src/web.c src/web_choices.c $(TEST_OBJS)
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_web_token.c \
+		$(filter-out src/web.o,$(TEST_OBJS))
 
 tests/test_backend_value: tests/test_backend_value.c src/backend.c $(TEST_OBJS)
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_backend_value.c $(TEST_OBJS)
@@ -51,6 +60,11 @@ tests/test_backend_value: tests/test_backend_value.c src/backend.c $(TEST_OBJS)
 # test_classifier_key включает src/classifier.c: его .o из линковки исключаем.
 tests/test_classifier_key: tests/test_classifier_key.c src/classifier.c $(TEST_OBJS)
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_classifier_key.c $(filter-out src/classifier.o,$(TEST_OBJS))
+
+# test_classifier_media тоже включает src/classifier.c (static media_quorum /
+# media_port / ip_in_cidr) — .o классификатора исключаем, как выше.
+tests/test_classifier_media: tests/test_classifier_media.c src/classifier.c src/classifier.h $(TEST_OBJS)
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_classifier_media.c $(filter-out src/classifier.o,$(TEST_OBJS))
 
 tests/test_conntrack: tests/test_conntrack.c src/conntrack.c src/conntrack.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_conntrack.c src/conntrack.c

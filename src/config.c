@@ -189,7 +189,10 @@ void config_set_defaults(susanin_config *c)
     c->auto_direct = 1;
     c->direct_pref_ttl = 3600;
     c->media_enabled = 0;
-    snprintf(c->media_ports, sizeof(c->media_ports), "%s", "80,443,554,1935,8080,8443");
+    /* Медиа-порты по умолчанию — только видео/IPTV. 80/443 убраны: обычная
+     * загрузка страницы под них подпадала, и два адреса уводили в VPN всю /24
+     * хостинга (инцидент reg.ru 2026-10-16). Кому нужно — задаёт явно. */
+    snprintf(c->media_ports, sizeof(c->media_ports), "%s", "554,1935,8080,8443");
     c->media_min_bytes = 1048576;
     c->media_ratio = 8;
     c->media_min_rate = 150000;

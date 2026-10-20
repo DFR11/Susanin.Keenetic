@@ -152,6 +152,25 @@ static void set_name(char *buf, size_t n, int proto_udp, int phase_ok)
 /* Активный egress: один интерфейс (в конфиге возможен список фейловера). */
 static char g_active_egress[64];
 
+/* Runtime-режим датаплейна: интерфейс или tproxy (Xray). В конфиге режим задаёт
+ * egress_type, но список egress_interface может содержать псевдо-кандидат
+ * "tproxy" (P1 из плана 2026-10-16): при переключении на него датаплейн
+ * пересобирается целиком, при возврате — обратно. -1 = как в конфиге. */
+static int g_tproxy_mode = -1;
+
+static int tproxy_active(const susanin_config *c)
+{
+    if (g_tproxy_mode >= 0)
+        return g_tproxy_mode;
+    return strcmp(c->egress_type, "tproxy") == 0;
+}
+
+/* Псевдо-имя кандидата-резерва через Xray. */
+static int is_tproxy_name(const char *s)
+{
+    return s && (!strcmp(s, "tproxy") || !strcmp(s, "xray"));
+}
+
 static const char *active_egress(const susanin_config *c)
 {
     if (g_active_egress[0])
@@ -179,7 +198,7 @@ static void set_env(const susanin_config *c)
     setenv("SUSANIN_DISK_MODE", c->disk_mode[0] ? c->disk_mode : "normal", 1);
     setenv("SUSANIN_TPROXY_PORT",
            (snprintf(v, sizeof(v), "%d",
-                     !strcmp(c->egress_type, "tproxy") ? c->tproxy_port : 0), v), 1);
+                     tproxy_active(c) ? c->tproxy_port : 0), v), 1);
     setenv("SUSANIN_UDP_RELAY_PORT",
            (snprintf(v, sizeof(v), "%d", c->udp_relay ? c->udp_relay_port : 0), v), 1);
     setenv("SUSANIN_IPV6_BLOCK", c->ipv6_block ? "1" : "0", 1);
@@ -427,12 +446,47 @@ int backend_teardown(const susanin_config *c)
     return run_script(c, "down", NULL);
 }
 
-/* Переключить default в таблице VPN на указанный egress (фейловер). */
+/* Переключить default в таблице VPN на указанный egress (фейловер).
+ * Спец-значение "tproxy"/"xray": переключение РЕЖИМА датаплейна на Xray —
+ * правила interface и tproxy взаимоисключающие, поэтому делаем down+up.
+ * Fail-safe: если Xray не слушает порт, режим не меняем. */
 int backend_set_egress(const susanin_config *c, const char *iface)
 {
-    int rc;
+    int rc, want_tproxy, was_tproxy;
     if (!iface || !iface[0])
         return -1;
+    want_tproxy = is_tproxy_name(iface);
+    was_tproxy = tproxy_active(c);
+    if (want_tproxy && !backend_local_listen(c->tproxy_port)) {
+        slogf(SL_ERROR,
+              "egress %s: Xray не слушает порт %d — в tproxy-режим не перехожу",
+              iface, c->tproxy_port);
+        return -1;
+    }
+    if (want_tproxy && was_tproxy)
+        return 0;                    /* уже в tproxy-режиме — делать нечего */
+    if (want_tproxy != was_tproxy) {
+        g_tproxy_mode = want_tproxy ? 1 : 0;
+        /* Активный egress выставляем ДО теардауна/провижна: datapath.sh берёт
+         * его из SUSANIN_EGRESS (set_env -> active_egress()), иначе после
+         * возврата из tproxy маршрут встал бы на первый интерфейс конфига, а не
+         * на запрошенный. */
+        if (want_tproxy)
+            g_active_egress[0] = '\0';   /* имя интерфейса здесь не нужно */
+        else
+            snprintf(g_active_egress, sizeof(g_active_egress), "%s", iface);
+        (void)backend_teardown(c);
+        rc = backend_provision(c);
+        if (rc != 0) {
+            slogf(SL_ERROR, "egress %s: пере-провижн датаплейна не удался (rc=%d)",
+                  iface, rc);
+            g_tproxy_mode = -1;      /* оставляем режим «по конфигу» */
+            return rc;
+        }
+        slogf(SL_INFO, "egress: режим датаплейна -> %s",
+              want_tproxy ? "tproxy" : "interface");
+        return 0;
+    }
     snprintf(g_active_egress, sizeof(g_active_egress), "%s", iface);
     rc = run_script(c, "egress", iface);
     if (rc != 0)

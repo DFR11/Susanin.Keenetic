@@ -358,15 +358,103 @@ static void serve_log(int fd, const susanin_config *cfg, const char *query, int 
     free(buf);
 }
 
-static int token_ok(const susanin_config *cfg, const char *req, const char *query)
+/* Сравнение токена за постоянное время: длина и байты, без раннего выхода по
+ * первому несовпадению (иначе токен можно подбирать по времени ответа). */
+static int token_eq(const char *a, const char *b)
+{
+    size_t la = strlen(a), lb = strlen(b);
+    unsigned char diff = (unsigned char)((la ^ lb) ? 1 : 0);
+    size_t i, n = la > lb ? la : lb;
+    for (i = 0; i < n; i++) {
+        unsigned char ca = (unsigned char)(i < la ? a[i] : 0);
+        unsigned char cb = (unsigned char)(i < lb ? b[i] : 0);
+        diff |= (unsigned char)(ca ^ cb);
+    }
+    return diff == 0;
+}
+
+/* Значение заголовка запроса: ищем "Name:" ТОЛЬКО в блоке заголовков (до пустой
+ * строки), а не по всему запросу — иначе искомую строку можно подсунуть в URL
+ * или тело и «пройти» проверку. 1 = заголовок найден. */
+static int header_value(const char *req, const char *name, char *out, size_t n)
+{
+    size_t nl = strlen(name);
+    const char *p = strstr(req, "\r\n");       /* первая строка — request line */
+    const char *end = strstr(req, "\r\n\r\n");
+    if (!p)
+        return 0;
+    p += 2;
+    if (!end)
+        end = req + strlen(req);
+    while (p < end) {
+        const char *eol = strstr(p, "\r\n");
+        size_t i = 0;
+        if (!eol || eol > end)
+            eol = end;
+        if ((size_t)(eol - p) > nl && p[nl] == ':' && !strncasecmp(p, name, nl)) {
+            const char *v = p + nl + 1;
+            while (v < eol && (*v == ' ' || *v == '\t'))
+                v++;
+            while (v < eol && i + 1 < n)
+                out[i++] = *v++;
+            while (i && (out[i - 1] == ' ' || out[i - 1] == '\t'))
+                i--;
+            out[i] = '\0';
+            return 1;
+        }
+        p = eol + 2;
+    }
+    return 0;
+}
+
+/* Значение cookie по имени (из заголовка Cookie). 1 = найдено. */
+static int cookie_value(const char *req, const char *name, char *out, size_t n)
+{
+    char hdr[1024];
+    const char *p;
+    size_t nl = strlen(name);
+    if (!header_value(req, "Cookie", hdr, sizeof(hdr)))
+        return 0;
+    p = hdr;
+    while (*p) {
+        while (*p == ' ' || *p == ';' || *p == '\t')
+            p++;
+        if (!strncmp(p, name, nl) && p[nl] == '=') {
+            size_t i = 0;
+            p += nl + 1;
+            while (*p && *p != ';' && i + 1 < n)
+                out[i++] = *p++;
+            out[i] = '\0';
+            return 1;
+        }
+        p = strchr(p, ';');
+        if (!p)
+            break;
+    }
+    return 0;
+}
+
+static int token_ok(const susanin_config *cfg, const char *req, const char *query,
+                    int is_write)
 {
     char need[128];
     const char *tok = cfg->web_token;
 
+    /* Токен не задан: панель открыта только на чтение. Изменяющие запросы
+     * (POST /api/config, /api/list/save, /api/reload …) без токена запрещены —
+     * иначе любой в LAN мог бы менять конфиг и подсовывать значения в скрипты. */
     if (!tok[0])
-        return 1; /* токен не задан — доступ открыт (только LAN) */
+        return is_write ? 0 : 1;
 
-    if (query) {
+    if (header_value(req, "X-Auth-Token", need, sizeof(need)) && token_eq(need, tok))
+        return 1;
+    if (cookie_value(req, "susanin_token", need, sizeof(need)) && token_eq(need, tok))
+        return 1;
+
+    /* ?token= принимаем ТОЛЬКО для первичного GET: панель сохраняет его в
+     * localStorage и дальше шлёт заголовком. Для изменяющих запросов query не
+     * принимаем — он попадает в историю браузера, referer и логи. */
+    if (!is_write && query) {
         const char *p = strstr(query, "token=");
         if (p) {
             size_t i = 0;
@@ -376,43 +464,8 @@ static int token_ok(const susanin_config *cfg, const char *req, const char *quer
                 i++;
             }
             need[i] = '\0';
-            if (!strcmp(need, tok))
+            if (token_eq(need, tok))
                 return 1;
-        }
-    }
-    {
-        const char *p = strstr(req, "susanin_token=");
-        if (p) {
-            size_t i = 0;
-            p += 15;
-            while (p[i] && p[i] != ';' && p[i] != '\r' && i + 1 < sizeof(need)) {
-                need[i] = p[i];
-                i++;
-            }
-            need[i] = '\0';
-            if (!strcmp(need, tok))
-                return 1;
-        }
-    }
-    {
-        const char *p = strstr(req, "X-Auth-Token:");
-        if (!p)
-            p = strstr(req, "x-auth-token:");
-        if (p) {
-            p = strchr(p, ':');
-            if (p) {
-                size_t i = 0;
-                p++;
-                while (*p == ' ' || *p == '\t')
-                    p++;
-                while (p[i] && p[i] != '\r' && p[i] != '\n' && i + 1 < sizeof(need)) {
-                    need[i] = p[i];
-                    i++;
-                }
-                need[i] = '\0';
-                if (!strcmp(need, tok))
-                    return 1;
-            }
         }
     }
     return 0;
@@ -636,7 +689,10 @@ static int config_value_ok(const char *k, const char *v)
             return 0;
         return 1;
     }
-    if (strncmp(k, "profile", 7) == 0)
+    /* Только реальные поля профиля: profileN_<поле>, N=1..4. Общий ключ
+     * profile_failover (он один на все профили) под этот шаблон не подходит —
+     * раньше он уходил в skipped, и панель не могла сохранить его вообще. */
+    if (strncmp(k, "profile", 7) == 0 && k[7] >= '1' && k[7] <= '4' && k[8] == '_')
         return profile_field_ok(k, v);
     return 1;
 }
@@ -1268,9 +1324,13 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
         }
     }
 
-    if (!token_ok(cfg, req, query)) {
+    if (!token_ok(cfg, req, query,
+                  strcmp(method, "GET") && strcmp(method, "HEAD"))) {
         free(bodybig);
-        reply_text(fd, 401, "unauthorized", head_only);
+        reply_text(fd, cfg->web_token[0] ? 401 : 403,
+                   cfg->web_token[0] ? "unauthorized"
+                                     : "read-only: set web_token to allow changes",
+                   head_only);
         return;
     }
 
