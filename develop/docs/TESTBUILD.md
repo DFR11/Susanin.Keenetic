@@ -18,13 +18,13 @@ XRay-egress (VLESS/REALITY), веб-панель, профили маршрут�
 ```sh
 opkg update && opkg install ca-certificates wget-ssl     у BusyBox-wget нет https
 cd /opt/tmp
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh | sh -s -- --yes
 ```
 
 Варианты (если сохранить файл):
 ```sh
 cd /opt/tmp && rm -f susanin-install.sh && \
-wget -O susanin-install.sh https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh
+wget -O susanin-install.sh https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh
 sh susanin-install.sh --check        arch/ядро/BusyBox, без установки
 sh susanin-install.sh --yes
 sh susanin-install.sh --channel stable --yes      последний релиз
@@ -64,7 +64,7 @@ Xray через `REDIRECT`, UDP — через релей в демоне. TUN �
    Вручную:
    ```sh
    wget -O /opt/sbin/xray \
-     https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/develop/xray/xray.mipsel
+     https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/develop/xray/xray.mipsel
      aarch64: .../develop/xray/xray.aarch64
    chmod +x /opt/sbin/xray
    sha256sum /opt/sbin/xray               сверить с develop/xray/SHA256SUMS

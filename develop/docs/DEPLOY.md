@@ -21,15 +21,20 @@ Release-сборкам и для dev-сборки не используются.
    определяется автоматически, файл скачивается из релиза и ставится штатным
    `opkg` (учёт пакета, `opkg remove`, конфиг и списки не перезаписываются):
    ```sh
-   opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
+   opkg update && opkg install ca-certificates wget-ssl
    wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
    ```
-   Вручную (если нужен контроль над файлом):
+   Режим VLESS/REALITY — добавьте `--with-xray-tproxy` (Xray скачается отдельно).
+   Вручную (если нужен контроль над файлом) — скачать, **сверить SHA256** и потом
+   ставить (файл и версию в URL подставьте свои — таблица в [README.md](README.md)):
    ```sh
-   mkdir -p /opt/tmp
-   wget -O /opt/tmp/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk \
+   mkdir -p /opt/tmp && cd /opt/tmp
+   wget -O susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk \
      https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
-   opkg install /opt/tmp/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
+   wget -O SHA256SUMS \
+     https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1/SHA256SUMS
+   sha256sum -c SHA256SUMS 2>/dev/null | grep mipsel-3.4
+   opkg install susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
    ```
    Имя файла под свою архитектуру (`opkg print-architecture`) — по таблице в
    [README.md](README.md) → «Пакетом Entware `.ipk`».
@@ -37,10 +42,11 @@ Release-сборкам и для dev-сборки не используются.
 2. **Установщик** (работает и там, где `tar` не знает `--exclude`):
    ```sh
    cd /opt/tmp
-   wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+   wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh | sh -s -- --yes
    ```
    Флаги: `--check` (показать arch/ядро/BusyBox), `--file`, `--channel stable`,
-   `--with-xray`, `--verify`, `--tmp`. Подробности: `sh bootstrap.sh --help`.
+   `--ipk` (ставить пакетом), `--with-xray` (Xray + tproxy-режим), `--verify`,
+   `--tmp`. Подробности: `sh bootstrap.sh --help`.
 
 3. **Вручную из архива**:
    ```sh

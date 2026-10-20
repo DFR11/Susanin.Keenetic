@@ -403,31 +403,40 @@ ndmc -c "show running-config" | grep -i "ip policy"
 
 ### Пакетом Entware `.ipk` (начиная с 0.4.0.RC1)
 
+Сначала зависимости: `ca-certificates` + `wget-ssl` нужны, чтобы скачать пакет по
+HTTPS (у BusyBox-wget его нет); остальное (`ipset`, `iptables`, `conntrack`)
+`opkg` подтянет сам из `Depends` пакета:
+
+```sh
+opkg update && opkg install ca-certificates wget-ssl
+```
+
 **Способ 1 — установщик сам определит архитектуру и поставит пакет** (рекомендуется):
 
 ```sh
-opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
 ```
-`--ipk` включает режим пакета: установщик определяет архитектуру Entware (как и
-для обычной установки), скачивает нужный `.ipk` из последнего релиза в `/opt/tmp`,
-сверяет SHA256 по `SHA256SUMS` из релиза и выполняет `opkg install`.
-Полезные флаги: `--version v0.4.0.RC1` (конкретная версия), `--force`
-(переустановить поверх: `opkg install --force-reinstall`), `--yes` (без вопросов),
-`--arch mipsel|mips|aarch64|armv7|x86_64` (если автоопределение не сработало),
-`--with-xray-tproxy` (режим VLESS/REALITY: скачает Xray в `/opt/sbin/xray`,
-сверит SHA256 и положит шаблон tproxy-конфига — см. «XRay как egress»).
-Если `curl` уже стоит, вместо `wget -qO- … | sh` можно использовать
-`curl -fsSL … | sh -s -- --ipk`:
+
+Что делает `--ipk`: определяет архитектуру Entware (`opkg print-architecture`,
+нормализация `mipsel-3.4` → `mipsel` и т.д.), скачивает
+`susanin-keenetic_<версия>_<arch>.ipk` из релиза в `/opt/tmp`, сверяет SHA256 по
+`SHA256SUMS` из этого же релиза (не совпало — установка отменяется) и выполняет
+`opkg install` (с `--force` — `opkg install --force-reinstall`).
+Флаги: `--version v0.4.0.RC1` (без него — последний релиз), `--force`
+(переустановить), `--yes` (без вопросов), `--arch mipsel|mips|aarch64|armv7|x86_64`
+(если автоопределение не сработало), `--with-xray-tproxy` — режим VLESS/REALITY:
+скачает Xray в `/opt/sbin/xray`, сверит SHA256 и положит шаблон tproxy-конфига
+(см. «XRay как egress»).
+С `curl` вместо `wget -qO- … | sh` — `curl -fsSL … | sh -s -- --ipk`.
 
 ```sh
-# VLESS/REALITY пакетом: Xray скачивается отдельно (в .ipk его нет)
+# VLESS/REALITY пакетом: Xray в .ipk не входит, установщик скачает его отдельно
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
   | sh -s -- --ipk --with-xray-tproxy
 ```
 
 **Способ 2 — вручную**, если нужен контроль над файлом. Сначала посмотрите
-архитектуру Entware:
+архитектуру Entware и выберите файл:
 
 ```sh
 opkg print-architecture | awk '{print $2}'
@@ -441,27 +450,23 @@ opkg print-architecture | awk '{print $2}'
 | `armv7sf-k3.2` | `susanin-keenetic_0.4.0.RC1_armv7sf-k3.2.ipk` |
 | `x86-64` | `susanin-keenetic_0.4.0.RC1_x86-64.ipk` |
 
-Скачивание и установка (подставьте свой файл из таблицы и нужный тег):
+Скачивание, **проверка суммы и только потом установка** (подставьте свой файл из
+таблицы; в имени и в URL — одна и та же версия):
 
 ```sh
-mkdir -p /opt/tmp
-wget -O /opt/tmp/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk \
+mkdir -p /opt/tmp && cd /opt/tmp
+wget -O susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk \
   https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
-opkg install /opt/tmp/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
-susanin status && susanin diagnose
-```
-
-Без `wget-ssl` (у BusyBox-wget нет HTTPS) качайте через `curl`:
-`curl -fL -o /opt/tmp/<файл>.ipk <URL>`. Проверить контрольную сумму:
-
-```sh
-wget -O /opt/tmp/SHA256SUMS \
+wget -O SHA256SUMS \
   https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1/SHA256SUMS
-cd /opt/tmp && sha256sum -c SHA256SUMS 2>/dev/null | grep susanin-keenetic
+sha256sum -c SHA256SUMS 2>/dev/null | grep mipsel-3.4   # ожидаем: ...: OK
+opkg install susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
+susanin version && susanin status && susanin diagnose
 ```
 
-Для последнего релиза имя файла содержит версию, поэтому подставьте её из
-страницы релиза — либо просто используйте «Способ 1» с `--ipk`.
+Если `wget` без HTTPS (BusyBox) — вместо `wget -O …` используйте
+`curl -fL -o …` с тем же адресом. Для новой версии замените `0.4.0.RC1`
+(в `v0.4.0.RC1` — соответственно `v0.4.0.RC1`) на её номер.
 
 Пакет ставит демон, скрипты, init-скрипты Entware, веб-панель и документацию в
 `/opt/susanin`. Конфиг (`susanin.conf`), списки `vpn_always`/`vpn_never`,
@@ -487,8 +492,9 @@ rm -rf /opt/susanin               # если нужно удалить и кон
 opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
 ```
 
-Установка **одной строкой**: скачается архив под вашу архитектуру,
-автоматически определятся LAN и VPN, затем спросит подтверждение:
+Установка **одной строкой**: `install.sh` скачает из релиза архив под вашу
+архитектуру (`susanin-keenetic-deploy-<arch>.tar.gz`), распакует, автоматически
+определит LAN и VPN, затем спросит подтверждение:
 
 ```sh
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
@@ -517,23 +523,25 @@ curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.
 sh install.sh --yes
 ```
 
-Тестовая (**develop**) сборка и старые BusyBox (где `tar` не знает `--exclude`) —
-установщик `bootstrap.sh`: сам определит arch/ядро, скачает архив и распакует
-только бинарник под вашу архитектуру:
+Старые BusyBox (где `tar` не знает `--exclude`) — установщик `bootstrap.sh`: сам
+определит arch/ядро, скачает архив и распакует только бинарник под вашу
+архитектуру. Тот же `bootstrap.sh` умеет ставить пакетом (`--ipk`) и добавлять
+Xray (`--with-xray`):
 
 ```sh
 cd /opt/tmp
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh | sh -s -- --yes
+# пакетом:           sh -s -- --yes --ipk
+# пакетом + Xray:    sh -s -- --yes --ipk --with-xray
+# tar-архив + Xray:  sh -s -- --yes --with-xray
 ```
+По умолчанию берётся **последний релиз**; конкретную версию задаёт
+`--version vX.Y.Z`.
 
-> Имя dev-архива (`develop/susanin-keenetic-0.4.0-dev.tar.gz`) — **стабильное**,
-> оно не меняется от версии к версии: так не ломаются ссылки и команды, которые
-> уже раздали тестерам. Фактическая версия внутри архива — в
-> `susanin-agent version` (сейчас `0.4.0.RC1`).
-
-Флаги: `--channel dev|stable`, `--version`, `--file`, `--url`, `--check`,
-`--dry-run`, `--with-xray`, `--verify`, `--tmp DIR`; остальные (`--yes`, `--arch`,
-`--egress`, `--lan`, `--force`, `--deps` и т.д.) передаются в `install.sh`.
+Флаги: `--channel stable|dev`, `--version`, `--file`, `--url`, `--check`,
+`--dry-run`, `--ipk`, `--with-xray`, `--verify`, `--tmp DIR`; остальные
+(`--yes`, `--arch`, `--egress`, `--lan`, `--force`, `--deps`) передаются в
+`install.sh`.
 
 Ваши `/opt/susanin/etc/susanin.conf`, `vpn_always.txt` и `vpn_never.txt` при
 установке и обновлении **не перезаписываются**, но списки могут **дополняться**

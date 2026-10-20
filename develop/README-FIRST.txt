@@ -23,7 +23,7 @@ ca-certificates ipset iptables conntrack wget-ssl:
 
 Установка — установщик (работает и на старых BusyBox, где tar не знает --exclude):
   cd /opt/tmp
-  wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+  wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh | sh -s -- --yes
 
   Варианты (если сохранить файл susanin-install.sh рядом):
     sh susanin-install.sh --check                 # arch/ядро/BusyBox, без установки

@@ -23,17 +23,20 @@
 #     /opt/sbin/xray, сверяя sha256 по xray/SHA256SUMS из пакета;
 #   * запускает install.sh из пакета и передаёт ему ваши флаги.
 #
-# Быстрый старт (тестовая ветка develop), без сохранения файла:
+# Быстрый старт (по умолчанию — последний релиз из Releases), без сохранения файла:
 #   cd /opt/tmp
-#   wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+#   wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh | sh -s -- --yes
 #
 # То же с сохранением файла (удобно перезапускать и смотреть `--check`):
 #   cd /opt/tmp && rm -f susanin-install.sh && \
-#   wget -O susanin-install.sh https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh && \
+#   wget -O susanin-install.sh https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh && \
 #   sh susanin-install.sh --yes
 #
-# Последний релиз (архив под свою архитектуру, качается с GitHub Releases):
-#   sh susanin-install.sh --channel stable --yes
+# Конкретная версия релиза:
+#   sh susanin-install.sh --version vX.Y.Z --yes
+#
+# Тестовая сборка из ветки (до релиза; после релиза ветка может быть удалена):
+#   sh susanin-install.sh --channel dev --branch <ветка> --yes
 #
 # Уже скачанный архив (без интернета):
 #   sh susanin-install.sh --file /opt/tmp/susanin-keenetic-0.4.0-dev.tar.gz --yes
@@ -48,8 +51,8 @@
 set -eu
 
 REPO="R17a/Susanin.Keenetic"
-BRANCH="develop"
-CHANNEL="dev"
+BRANCH="main"
+CHANNEL="stable"
 VERSION="latest"
 DEV_FILE="susanin-keenetic-0.4.0-dev.tar.gz"
 URL=""
@@ -82,11 +85,11 @@ usage() {
 Использование: sh bootstrap.sh [опции своего установщика] [опции install.sh]
 
 Опции установщика:
-  --channel dev|stable   dev (по умолчанию) — универсальный архив из ветки
-                         develop; stable — последний GitHub Release (архив под
-                         вашу архитектуру).
+  --channel stable|dev   stable (по умолчанию) — последний GitHub Release
+                         (архив под вашу архитектуру); dev — универсальный
+                         архив из ветки (нужен --branch; только до релиза).
   --version latest|vX.Y.Z  версия для --channel stable.
-  --branch ВЕТКА         ветка GitHub для --channel dev (по умолчанию develop).
+  --branch ВЕТКА         ветка GitHub для --channel dev (по умолчанию main).
   --dev-file ИМЯ.tar.gz  имя файла dev-архива. Обычно не нужно: имя одно и то же
                          для всех dev-сборок — susanin-keenetic-0.4.0-dev.tar.gz.
   --url URL              скачать архив по своему адресу.

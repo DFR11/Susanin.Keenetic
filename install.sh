@@ -66,7 +66,7 @@ xray_setup() {
         else
             pick_fetch
             mkdir -p /opt/sbin /opt/tmp 2>/dev/null || true
-            _xbase="https://raw.githubusercontent.com/$REPO/develop/develop/xray"
+            _xbase="https://raw.githubusercontent.com/$REPO/main/develop/xray"
             _xfile="/opt/tmp/xray.$_xa"
             say "скачиваю Xray ($_xa): $_xbase/xray.$_xa"
             if fetch "$_xbase/xray.$_xa" "$_xfile"; then

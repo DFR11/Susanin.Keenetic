@@ -25,10 +25,11 @@ sh /opt/susanin/tools/susanin.sh status
 обновлении **не перезаписываются**, но списки **могут дополняться** новыми
 записями из сборки (merge; существующие строки не удаляются).
 
-Для **develop-сборки** и старых BusyBox (где `tar` не знает `--exclude`):
+Для старых BusyBox (где `tar` не знает `--exclude`) и установки пакетом:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh | sh -s -- --yes
+# пакетом .ipk:  sh -s -- --yes --ipk
 ```
 
 ## Управление
