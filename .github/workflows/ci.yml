@@ -50,7 +50,9 @@ jobs:
           set -e
           sh tools/make-ipk.sh --one x86_64 susanin-agent --out dist-ci --version ci
           ls -l dist-ci
-          ar t dist-ci/*.ipk | grep -q data.tar.gz
+          # .ipk = gzip(tar) с ./debian-binary и ./data.tar.gz (формат фида Entware)
+          tar -tzf dist-ci/*.ipk | grep -q './debian-binary'
+          tar -tzf dist-ci/*.ipk | grep -q './data.tar.gz'
 
       - name: Единый список поставки (.ipk / develop / манифест)
         run: |

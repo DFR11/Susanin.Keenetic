@@ -1,7 +1,9 @@
 #!/bin/sh
 # make-ipk.sh — собрать .ipk-пакеты для Entware (задача T15 / 0.4.0.RC1).
 #
-# .ipk — это ar-архив: debian-binary + control.tar.gz + data.tar.gz.
+# .ipk — это gzip(tar) с членами ./debian-binary, ./data.tar.gz, ./control.tar.gz
+# (именно так упакованы пакеты в фиде Entware; классический ar-вариант
+# Keenetic-овский opkg не принимает: «Malformed package file»).
 # Пакет ставится в /opt (Entware): /opt/susanin/... и /opt/etc/init.d/...
 #
 # Использование:
@@ -10,7 +12,7 @@
 #   sh tools/make-ipk.sh --bin build --out dist --one mipsel /path/susanin-agent
 #
 # Без --one собирает все архитектуры, для которых есть <bin>/susanin-agent.<arch>.
-# Требует: ar, tar, gzip (есть в WSL/Ubuntu и в Entware).
+# Требует: tar, gzip (есть в WSL/Ubuntu и в Entware).
 #
 # Имена: susanin-keenetic_<version>_<opkg-arch>.ipk
 set -eu
@@ -44,7 +46,6 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-command -v ar >/dev/null 2>&1 || die "нет 'ar' (установите binutils)"
 command -v tar >/dev/null 2>&1 || die "нет 'tar'"
 command -v gzip >/dev/null 2>&1 || die "нет 'gzip'"
 
@@ -126,13 +127,16 @@ build_one() { # build_one <target-arch> <binary>
     done
     chmod 755 "$_ctrl/postinst" "$_ctrl/prerm" "$_ctrl/postrm" 2>/dev/null || true
 
-    # Сборка .ipk: debian-binary, control.tar.gz, data.tar.gz
+    # Сборка .ipk. Формат — как у пакетов Entware (bin.entware.net): это
+    # gzip(tar) с членами ./debian-binary, ./data.tar.gz, ./control.tar.gz.
+    # Классический ar-.ipk (debian-binary + control.tar.gz + data.tar.gz)
+    # Keenetic-овский opkg отвергает: «Malformed package file».
     printf '2.0\n' > "$_work/debian-binary"
     ( cd "$_ctrl" && tar -czf "$_work/control.tar.gz" ./control ./postinst ./prerm ./postrm 2>/dev/null \
         || tar -czf "$_work/control.tar.gz" ./control )
     ( cd "$_data" && tar -czf "$_work/data.tar.gz" ./opt )
     _out="$OUT/susanin-keenetic_${VER}_${_oa}.ipk"
-    ( cd "$_work" && ar rc "$_out" debian-binary control.tar.gz data.tar.gz )
+    ( cd "$_work" && tar -czf "$_out" ./debian-binary ./data.tar.gz ./control.tar.gz )
     echo "make-ipk: $_out ($(du -h "$_out" | awk '{print $1}'))"
     rm -rf "$_work"
 }

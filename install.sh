@@ -407,18 +407,40 @@ if [ "$USE_IPK" -eq 1 ]; then
        * если релиз уже есть:                 sh install.sh --ipk --version vX.Y.Z"
         fi
     fi
-    # Контрольная сумма: если рядом с файлом есть SHA256SUMS — сверяем.
-    _sums="$_sums_dir/SHA256SUMS"
-    if command -v sha256sum >/dev/null 2>&1 && [ -f "$_sums" ] && \
-       grep -q " $(basename "$IPK_FILE")$" "$_sums" 2>/dev/null; then
-        if ( cd "$_sums_dir" && grep " $(basename "$IPK_FILE")$" "$_sums" > .ipk.sum \
-             && sha256sum -c .ipk.sum >/dev/null 2>&1 ); then
-            say "SHA256: ok"
-        else
-            rm -f "$_sums_dir/.ipk.sum"
-            die "SHA256 не совпал — файл повреждён, скачайте заново"
+    # --- проверка файла ДО установки -----------------------------------------
+    # 1) Формат. Пакеты Entware — это gzip(tar) с ./debian-binary, ./data.tar.gz,
+    #    ./control.tar.gz; старые сборки встречались и как ar-архив ("!<arch>").
+    #    Если пришла HTML-страница или файл обрезан (кончилось место в /opt) —
+    #    opkg сказал бы невнятное "Malformed package file", поэтому проверяем сами.
+    _ibase=$(basename "$IPK_FILE")
+    if [ ! -s "$IPK_FILE" ]; then
+        die "пакет пустой: $IPK_FILE (место в /opt? проверьте df -h /opt)"
+    fi
+    if [ "$(head -c 7 "$IPK_FILE" 2>/dev/null)" != "!<arch" ]; then
+        if ! gzip -t "$IPK_FILE" >/dev/null 2>&1; then
+            _size=$(wc -c < "$IPK_FILE" | tr -d ' ')
+            die "это не .ipk (нет ни ar-, ни gzip-заголовка; размер $_size б): $IPK_FILE
+     обычно значит, что файл скачался не полностью или вместо файла пришла
+     страница ошибки. Проверьте место (df -h /opt) и повторите."
         fi
-        rm -f "$_sums_dir/.ipk.sum"
+    fi
+    # 2) SHA256 по SHA256SUMS (строки вида "<hash>  ./имя" или "<hash>  имя").
+    _sums="$_sums_dir/SHA256SUMS"
+    _want=""
+    [ -f "$_sums" ] && _want=$(awk -v b="$_ibase" \
+        '$2==b || $2=="./"b {print $1; exit}' "$_sums" 2>/dev/null || true)
+    if [ -n "$_want" ] && command -v sha256sum >/dev/null 2>&1; then
+        _got=$(sha256sum "$IPK_FILE" | awk '{print $1}')
+        if [ "$_want" != "$_got" ]; then
+            _size=$(wc -c < "$IPK_FILE" | tr -d ' ')
+            die "SHA256 не совпал — файл повреждён (размер $_size б, ожидалось ${_want%?}…)
+     вероятная причина: не хватило места в /opt/tmp (df -h /opt) или скачивание
+     оборвалось. Освободите место и повторите; можно проверить так:
+       wget -O /opt/tmp/x.ipk $_ibase   # и сравнить sha256sum с $_sums"
+        fi
+        say "SHA256: ok"
+    else
+        say "SHA256: пропущено (нет SHA256SUMS/sha256sum)"
     fi
     [ -n "$IPK_LOCAL" ] || rm -f "$_sums"
     if [ "$FORCE" -eq 1 ]; then
@@ -428,7 +450,9 @@ if [ "$USE_IPK" -eq 1 ]; then
     else
         say "opkg install $IPK_FILE"
         opkg install "$IPK_FILE" \
-            || die "opkg install не удался (если пакет уже стоит: добавьте --force)"
+            || die "opkg install не удался (если пакет уже стоит: добавьте --force)
+     «Malformed package file» = файл пакета повреждён/недокачан: проверьте
+     sha256sum $IPK_FILE и df -h /opt, затем повторите."
     fi
     say "готово. Проверка: susanin status && susanin diagnose"
     say "конфиг: $PREFIX/etc/susanin.conf — проверьте egress_interface и lan_interfaces"

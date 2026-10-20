@@ -78,7 +78,17 @@ if [ "$CHK_IPK" = 1 ]; then
         fail "нет .ipk (укажите --ipk FILE)"
     else
         T=$(mktemp -d)
-        ar p "$IPK" data.tar.gz > "$T/data.tar.gz" 2>/dev/null || fail "не читается $IPK"
+        # .ipk бывает двух видов: gzip(tar) с ./data.tar.gz (как в фиде Entware)
+        # или классический ar-архив с членом data.tar.gz. Поддерживаем оба.
+        if tar -xzOf "$IPK" ./data.tar.gz > "$T/data.tar.gz" 2>/dev/null && \
+           gzip -t "$T/data.tar.gz" 2>/dev/null; then
+            :
+        elif ar p "$IPK" data.tar.gz > "$T/data.tar.gz" 2>/dev/null && \
+             gzip -t "$T/data.tar.gz" 2>/dev/null; then
+            :
+        else
+            fail "не читается $IPK (ни tar-, ни ar-формат)"
+        fi
         ( cd "$T" && tar -xzf data.tar.gz 2>/dev/null )
         while read -r cls src; do
             [ -n "${src:-}" ] || continue
