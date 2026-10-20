@@ -163,6 +163,14 @@ if [ -n "${DIR:-}" ] && [ -d "$DIR/docs" ]; then
     cp -r "$DIR/docs/." "$PREFIX/docs/" 2>/dev/null || true
 fi
 
+# Статика веб-панели: без этого правки www/ НЕ доезжали до установленных систем
+# через `susanin update` (копировались только *.sh, docs/ и бинарник).
+if [ -n "${DIR:-}" ] && [ -d "$DIR/www" ]; then
+    mkdir -p "$PREFIX/www"
+    cp -r "$DIR/www/." "$PREFIX/www/" 2>/dev/null || true
+    say "веб-панель обновлена: $PREFIX/www"
+fi
+
 # Короткий вызов `susanin …`: симлинк в /opt/bin (не трогаем чужой файл с этим именем).
 if [ -d /opt/bin ] && [ ! -e /opt/bin/susanin ]; then
     ln -s "$PREFIX/tools/susanin.sh" /opt/bin/susanin 2>/dev/null \

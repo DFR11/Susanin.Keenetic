@@ -52,28 +52,31 @@ jobs:
         run: |
           set -e
           STAGE="pkg-${{ matrix.arch }}"
-          mkdir -p "$STAGE"
-          cp susanin-agent "$STAGE/susanin-agent"
-          # Scripts live in tools/, docs/conf/lists in the repo root, and the
-          # init script in init/entware/ (S94susanin used to be missed here).
-          # `set -e` makes any missing file fail the build loudly.
-          cp tools/datapath.sh tools/susanin.sh tools/update.sh \
-             tools/uninstall.sh tools/report.sh tools/diagnose.sh \
-             tools/profiles.sh tools/xray-egress.sh "$STAGE/"
-          cp install.sh config.example.conf cdn_ranges.txt \
-             vpn_always.txt vpn_never.txt \
-             DEPLOY.md xray-tproxy.json.example "$STAGE/"
-          cp init/entware/S94susanin "$STAGE/S94susanin"
-          cp init/entware/S95susanin-web "$STAGE/S95susanin-web"
-          cp init/entware/S93xray-tproxy "$STAGE/S93xray-tproxy"
-          cp -r www "$STAGE/www"
+          # Состав архива берётся из единого списка packaging/manifest.txt —
+          # тот же, что у .ipk и develop (tools/stage-release.sh).
+          rm -rf "$STAGE"
+          sh tools/stage-release.sh --out "$STAGE" --bin susanin-agent
           tar -czf "susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz" -C "$STAGE" .
           ls -l "susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz"
+      - name: Build .ipk (Entware)
+        run: |
+          set -e
+          sh tools/make-ipk.sh --one "${{ matrix.arch }}" susanin-agent --out dist-ipk \
+            --version "${GITHUB_REF_NAME#v}"
+          ls -l dist-ipk/
+      - name: Проверка состава поставки
+        run: |
+          set -e
+          sh tools/check-shipping.sh
+          sh tools/check-shipping.sh --ipk "$(ls dist-ipk/*.ipk | head -1)"
+          sh tools/check-shipping.sh --develop develop
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: pkg-${{ matrix.arch }}
-          path: susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz
+          path: |
+            susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz
+            dist-ipk/*.ipk
 
   publish:
     needs: build
@@ -89,7 +92,7 @@ jobs:
       - name: Checksums
         run: |
           cd dist
-          sha256sum *.tar.gz > SHA256SUMS
+          sha256sum *.tar.gz *.ipk > SHA256SUMS 2>/dev/null || sha256sum *.tar.gz > SHA256SUMS
           cat SHA256SUMS
       - name: Compose release notes
         run: |
@@ -121,4 +124,5 @@ jobs:
           body_path: release-body.md
           files: |
             dist/*.tar.gz
+            dist/*.ipk
             dist/SHA256SUMS

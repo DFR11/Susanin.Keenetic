@@ -1,0 +1,20 @@
+#!/bin/sh
+# postrm — после удаления пакета. Данные удаляются только при purge.
+set -u
+PREFIX=/opt/susanin
+
+# Симлинк короткого вызова — только если он ведёт на наш скрипт.
+if [ -L /opt/bin/susanin ]; then
+    _t=$(readlink /opt/bin/susanin 2>/dev/null || echo "")
+    case "$_t" in
+        "$PREFIX"/tools/susanin.sh|"$PREFIX"/tools/*) rm -f /opt/bin/susanin ;;
+    esac
+fi
+
+if [ "${1:-}" = "purge" ] || [ "${1:-}" = "remove-all" ]; then
+    rm -rf "$PREFIX"
+    echo "[susanin] данные удалены ($PREFIX)"
+else
+    echo "[susanin] удалено; конфиг, списки и состояние оставлены в $PREFIX/etc и $PREFIX/var"
+fi
+exit 0

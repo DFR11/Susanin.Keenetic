@@ -1,0 +1,44 @@
+#!/bin/sh
+# postinst — после установки/обновления пакета susanin-keenetic (.ipk).
+# Правила: данные пользователя (конфиг, списки, состояние, профили) НЕ перезаписываем.
+set -u
+PREFIX=/opt/susanin
+
+mkdir -p "$PREFIX/var" "$PREFIX/var/backup" "$PREFIX/etc/profiles"
+chmod 755 "$PREFIX" 2>/dev/null || true
+chmod +x "$PREFIX/tools/"*.sh 2>/dev/null || true
+chmod +x "$PREFIX/bin/susanin-agent" 2>/dev/null || true
+
+# Конфиг: только если его ещё нет.
+if [ ! -f "$PREFIX/etc/susanin.conf" ] && [ -f "$PREFIX/share/susanin.conf.example" ]; then
+    cp "$PREFIX/share/susanin.conf.example" "$PREFIX/etc/susanin.conf"
+    echo "[susanin] создан конфиг $PREFIX/etc/susanin.conf (проверьте egress_interface/lan_interfaces)"
+fi
+
+# Списки: только если их ещё нет (пользовательские правки не трогаем).
+for _l in vpn_always vpn_never; do
+    if [ ! -f "$PREFIX/etc/$_l.txt" ]; then
+        if [ -f "$PREFIX/share/$_l.txt" ]; then
+            cp "$PREFIX/share/$_l.txt" "$PREFIX/etc/$_l.txt"
+        else
+            : > "$PREFIX/etc/$_l.txt"
+        fi
+    fi
+done
+
+# Короткий вызов `susanin …` (чужой файл с этим именем не перезаписываем).
+if [ -d /opt/bin ] && [ ! -e /opt/bin/susanin ]; then
+    ln -s "$PREFIX/tools/susanin.sh" /opt/bin/susanin 2>/dev/null || true
+fi
+
+# Перезапуск службы (идемпотентно; ошибки не валят установку).
+if [ -x /opt/etc/init.d/S94susanin ]; then
+    /opt/etc/init.d/S94susanin restart >/dev/null 2>&1 || true
+fi
+if [ -x /opt/etc/init.d/S95susanin-web ]; then
+    if grep -q '^web_enable=1' "$PREFIX/etc/susanin.conf" 2>/dev/null; then
+        /opt/etc/init.d/S95susanin-web restart >/dev/null 2>&1 || true
+    fi
+fi
+echo "[susanin] установлено. Проверка: susanin status && susanin diagnose"
+exit 0

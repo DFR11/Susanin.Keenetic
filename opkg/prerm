@@ -1,0 +1,10 @@
+#!/bin/sh
+# prerm — перед удалением/обновлением: остановить службы и снять наши правила.
+# Данные (конфиг, списки, state) не удаляем — это делает postrm только при purge.
+set -u
+[ -x /opt/etc/init.d/S95susanin-web ] && /opt/etc/init.d/S95susanin-web stop >/dev/null 2>&1 || true
+[ -x /opt/etc/init.d/S94susanin ] && /opt/etc/init.d/S94susanin stop >/dev/null 2>&1 || true
+if [ -x /opt/susanin/tools/datapath.sh ]; then
+    sh /opt/susanin/tools/datapath.sh down >/dev/null 2>&1 || true
+fi
+exit 0

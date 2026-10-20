@@ -1,0 +1,50 @@
+# Единый список того, что ПОСТАВЛЯЕТСЯ (0.4.0.RC1).
+#
+# Читают: tools/make-ipk.sh (.ipk), tools/stage-release.sh (CI tar-архив),
+# tools/check-shipping.sh (проверка, что ничего не забыто и лишнего не уехало).
+#
+# Формат: <класс> <путь от корня репозитория>
+#   tool  — скрипты для устройства      -> /opt/susanin/tools/  (в архиве: корень)
+#   init  — init-скрипты Entware        -> /opt/etc/init.d/     (в архиве: корень)
+#   doc   — документация                -> /opt/susanin/docs/   (в архиве: docs/)
+#   share — примеры/списки              -> /opt/susanin/share/  (в архиве: корень)
+#   cfg   — пример конфига              -> share/susanin.conf.example
+#   www   — статика панели (каталог)    -> /opt/susanin/www/    (в архиве: www/)
+#   root  — файлы только для tar-архива (в .ipk не нужны)
+#
+# Всё, что лежит в tools/, но здесь не перечислено, обязано быть в
+# packaging/dev-only.txt с причиной — это проверяет tests/test-shipping.sh.
+
+tool    tools/datapath.sh
+tool    tools/susanin.sh
+tool    tools/update.sh
+tool    tools/uninstall.sh
+tool    tools/report.sh
+tool    tools/diagnose.sh
+tool    tools/profiles.sh
+tool    tools/xray-egress.sh
+tool    tools/soak.sh
+
+init    init/entware/S93xray-tproxy
+init    init/entware/S94susanin
+init    init/entware/S95susanin-web
+
+doc     README.md
+doc     USER_GUIDE.md
+doc     TROUBLESHOOTING.md
+doc     DEPLOY.md
+doc     XRAY.md
+doc     TESTBUILD.md
+doc     CHANGELOG.md
+doc     LICENSE
+
+cfg     config.example.conf
+share   cdn_ranges.txt
+share   vpn_always.txt
+share   vpn_never.txt
+share   xray-tproxy.json.example
+
+www     www
+
+root    install.sh
+root    bootstrap.sh

@@ -69,6 +69,42 @@ san() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9_'; }
 is_ip4()  { printf '%s' "$1" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; }
 is_cidr() { printf '%s' "$1" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$'; }
 
+# Наши биты метки основной схемы (susanin.conf mark_mask) и её цепочка: профиль
+# должен стоять ВЫШЕ неё, иначе адрес, который основная схема уже выучила или
+# держит в vpn_always, профиль не заберёт никогда (разбор 2026-10-12/13).
+MARK_MASK=$(cfg mark_mask); [ -n "$MARK_MASK" ] || MARK_MASK=0x30000000
+MAIN_CHAIN=SUSANIN
+
+# Дефолтные метки профилей — РАЗНЫЕ по индексу, как обещает README
+# (0x40000000, 0x08000000, 0x04000000, 0x02000000). Раньше всем профилям
+# ставилась одна и та же метка, и при 2+ профилях правила дрались за неё.
+default_mark() {
+    case "$1" in
+        1) printf '0x40000000' ;;
+        2) printf '0x08000000' ;;
+        3) printf '0x04000000' ;;
+        4) printf '0x02000000' ;;
+        *) printf '0x40000000' ;;
+    esac
+}
+
+prof_mark() { # <index> -> метка профиля (конфиг или дефолт по индексу)
+    _pm=$(cfg "profile$1_mark")
+    [ -n "$_pm" ] || _pm=$(default_mark "$1")
+    printf '%s' "$_pm"
+}
+
+# RETURN для адресов профиля в основной цепочке: иначе SUSANIN метит их раньше
+# (и с маской 0x30000000, куда бит профиля не входит) и профиль не срабатывает.
+del_prof_return() { # <set>
+    while "$IPT" -t mangle -D "$MAIN_CHAIN" -m set --match-set "$1" dst -j RETURN 2>/dev/null; do :; done
+}
+add_prof_return() { # <set>
+    "$IPT" -t mangle -S "$MAIN_CHAIN" >/dev/null 2>&1 || return 0
+    del_prof_return "$1"
+    "$IPT" -t mangle -I "$MAIN_CHAIN" -m set --match-set "$1" dst -j RETURN 2>/dev/null || true
+}
+
 resolv() { # domain -> IPv4
     nslookup "$1" 2>/dev/null | awk '
         /^Name:/ { f = 1; next }
@@ -80,10 +116,17 @@ resolv() { # domain -> IPv4
 
 prof_name() { cfg "profile$1_name"; }
 
+# Сколько адресов реально в наборе профиля (не «сколько строк в файле»).
+set_count() { "$IPSET" list "$1" 2>/dev/null | grep -cE '^[0-9]+\.'; }
+
 fill_set() { # set listfile
     _s="$1"; _f="$2"
     [ -n "$_f" ] && [ -f "$_f" ] || return 0
-    while IFS= read -r _raw; do
+    # `|| [ -n "$_raw" ]` — иначе ПОСЛЕДНЯЯ строка файла без перевода строки в
+    # конце теряется: read при EOF без разделителя возвращает не-ноль (значение
+    # при этом уже присвоено) и тело цикла не выполняется. С одним доменом в
+    # файле это давало пустой набор и молча неработающий профиль.
+    while IFS= read -r _raw || [ -n "$_raw" ]; do
         _e=$(printf '%s' "$_raw" | sed 's/#.*//' | tr -d ' \t\r')
         [ -z "$_e" ] && continue
         if is_ip4 "$_e" || is_cidr "$_e"; then
@@ -157,7 +200,7 @@ up() {
         [ -n "$_eg" ] || _eg=$(printf '%s' "$_egs" | cut -d, -f1)
         _lf=$(cfg "profile${_i}_list")
         _tb=$(cfg "profile${_i}_table"); [ -n "$_tb" ] || _tb=$((200 + _i))
-        _mk=$(cfg "profile${_i}_mark");   [ -n "$_mk" ] || _mk=0x40000000
+        _mk=$(prof_mark "$_i")
         _sn="$SETPFX$(san "$_nm")"
 
         "$IPSET" create "$_sn" hash:net timeout 0 -exist 2>/dev/null || true
@@ -165,6 +208,11 @@ up() {
         fill_set "$_sn" "$_lf"
         _gu=$(cfg "profile${_i}_geo_url")
         [ -n "$_gu" ] && fill_geo "$_sn" "$_gu" "$VARDIR/profiles/$(san "$_nm").txt"
+
+        _cnt=$(set_count "$_sn")
+        if [ "${_cnt:-0}" -eq 0 ]; then
+            echo "[profiles] $_nm: набор пуст (0 адресов) — профиль ни на что не сработает (пустой список / не резолвится домен / в файле нет перевода строки в конце)"
+        fi
 
         if [ -n "$_eg" ] && [ -e "/sys/class/net/$_eg" ]; then
             "$IPB" route replace default dev "$_eg" table "$_tb" 2>/dev/null || true
@@ -178,6 +226,17 @@ up() {
                "$IPB" route show table "$_tb" 2>/dev/null | grep -q '^default'; then
                 "$IPT" -t mangle -A "$CHAIN" -m set --match-set "$_sn" dst \
                        -m mark --mark 0x0 -j MARK --set-mark "$_mk" 2>/dev/null || true
+                # CONNMARK: чтобы движок видел поток «своим» (ctmark != 0) и не
+                # учил адрес профиля в основную схему. Без этого профильный поток
+                # выглядел неразмеченным и уходил в автообучение (двух встречных
+                # механизмов на один адрес). Маска — сам бит профиля: биты
+                # основной схемы (mark_mask) не трогаем.
+                "$IPT" -t mangle -A "$CHAIN" -m set --match-set "$_sn" dst \
+                       -j CONNMARK --set-xmark "$_mk/$_mk" 2>/dev/null || true
+                # И RETURN в основной цепочке: профиль должен выигрывать у
+                # выученных адресов/vpn_always (главная причина «профиль
+                # поднят, а не работает»).
+                add_prof_return "$_sn"
             else
                 echo "[profiles] $_nm: нет правила/маршрута для mark $_mk table $_tb — профиль пропущен"
             fi
@@ -187,7 +246,11 @@ up() {
         _i=$((_i + 1))
     done
 
-    "$IPT" -t mangle -C PREROUTING -j "$CHAIN" 2>/dev/null \
+    # Профили должны стоять ПЕРВЫМИ в PREROUTING: основная цепочка SUSANIN
+    # метит адрес раньше и забирает поток. Старый хвостовой jump снимаем, чтобы
+    # не было двух одинаковых.
+    "$IPT" -t mangle -D PREROUTING -j "$CHAIN" 2>/dev/null || true
+    "$IPT" -t mangle -I PREROUTING 1 -j "$CHAIN" 2>/dev/null \
         || "$IPT" -t mangle -A PREROUTING -j "$CHAIN" 2>/dev/null || true
     echo "[profiles] up: $_n профил(ей)"
 }
@@ -208,7 +271,11 @@ refresh() {
         fill_set "$_sn" "$_lf"
         _gu=$(cfg "profile${_i}_geo_url")
         [ -n "$_gu" ] && fill_geo "$_sn" "$_gu" "$VARDIR/profiles/$(san "$_nm").txt"
-        echo "[profiles] refresh $_nm <- ${_lf:-?}"
+        _cnt=$(set_count "$_sn")
+        if [ "${_cnt:-0}" -eq 0 ]; then
+            echo "[profiles] $_nm: набор пуст (0 адресов) — профиль ни на что не сработает (пустой список / не резолвится домен / в файле нет перевода строки в конце)"
+        fi
+        echo "[profiles] refresh $_nm <- ${_lf:-?} (адресов: ${_cnt:-0})"
         _i=$((_i + 1))
     done
 }
@@ -222,8 +289,9 @@ down() {
         _nm=$(prof_name "$_i")
         if [ -z "$_nm" ]; then _i=$((_i + 1)); continue; fi
         _tb=$(cfg "profile${_i}_table"); [ -n "$_tb" ] || _tb=$((200 + _i))
-        _mk=$(cfg "profile${_i}_mark");   [ -n "$_mk" ] || _mk=0x40000000
+        _mk=$(prof_mark "$_i")
         _sn="$SETPFX$(san "$_nm")"
+        del_prof_return "$_sn"
         "$IPB" rule del fwmark "$_mk" lookup "$_tb" 2>/dev/null || true
         "$IPB" route flush table "$_tb" 2>/dev/null || true
         "$IPSET" destroy "$_sn" 2>/dev/null || true
@@ -234,6 +302,9 @@ down() {
 
 status() {
     echo "chain $CHAIN: $("$IPT" -t mangle -S "$CHAIN" >/dev/null 2>&1 && echo ok || echo НЕТ)"
+    _pos=$("$IPT" -t mangle -S PREROUTING 2>/dev/null | grep -n -- "-j $CHAIN" | head -n1 | cut -d: -f1)
+    echo "jump в PREROUTING: ${_pos:-нет} (должен быть первым: профиль выигрывает у основной схемы)"
+    _marks=""
     _i=1
     while [ "$_i" -le "$MAXP" ]; do
         _nm=$(prof_name "$_i")
@@ -244,9 +315,15 @@ status() {
         _pv=$((_i - 1))
         _eg=$(cfg "profile${_pv}_egress")
         _tb=$(cfg "profile${_pv}_table"); [ -n "$_tb" ] || _tb=$((200 + _pv))
-        _mk=$(cfg "profile${_pv}_mark");   [ -n "$_mk" ] || _mk=0x40000000
+        _mk=$(prof_mark "$_pv")
+        _mk_user=$(cfg "profile${_pv}_mark")
         _sn="$SETPFX$(san "$_nm")"
-        _c=$("$IPSET" list "$_sn" 2>/dev/null | grep -cE '^[0-9]+\.')
+        case " $_marks " in
+            *" $_mk "*) _mdup=1 ;;
+            *) _mdup=0 ;;
+        esac
+        _marks="$_marks $_mk"
+        _c=$(set_count "$_sn")
         _live=""
         for _e in $(printf '%s' "$_eg" | tr ',' ' '); do
             [ -e "/sys/class/net/$_e" ] && { _live="$_e"; break; }
@@ -255,8 +332,26 @@ status() {
         _rule=$("$IPB" rule show 2>/dev/null | grep -c "fwmark $_mk lookup $_tb")
         _rt=$("$IPB" route show table "$_tb" 2>/dev/null | grep -c '^default')
         _mr=$("$IPT" -t mangle -S "$CHAIN" 2>/dev/null | grep -c -- "--match-set $_sn dst")
-        echo "  $_nm: $_egs table=$_tb mark=$_mk set=$_sn entries=${_c:-0}"
+        echo "  $_nm: $_egs table=$_tb mark=$_mk$([ -n "$_mk_user" ] && echo " (из конфига)" || echo " (дефолт по индексу)") set=$_sn entries=${_c:-0}"
+        [ "$_mdup" = "1" ] && echo "      ВНИМАНИЕ: метка $_mk уже занята другим профилем — при 2+ профилях задайте profileN_mark явно (0x40000000/0x08000000/0x04000000/0x02000000)."
+        _ret=$("$IPT" -t mangle -S "$MAIN_CHAIN" 2>/dev/null | grep -c -- "--match-set $_sn dst -j RETURN")
+        echo "      RETURN в $MAIN_CHAIN: $([ "${_ret:-0}" -gt 0 ] && echo есть || echo НЕТ)"
         echo "      ip rule=$([ "${_rule:-0}" -gt 0 ] && echo есть || echo НЕТ), default в таблице=$([ "${_rt:-0}" -gt 0 ] && echo есть || echo НЕТ), правило mark=$([ "${_mr:-0}" -gt 0 ] && echo есть || echo НЕТ)"
+        # entries=0 при «есть/есть/есть» — самая обманчивая картина: правила и
+        # маршрут на месте, а метка не встанет ни на один пакет.
+        if [ "${_c:-0}" -eq 0 ]; then
+            echo "      ВНИМАНИЕ: набор пуст (0 адресов) — профиль не сработает. Проверьте файл списка, резолв доменов и перевод строки в конце файла."
+        fi
+        # Профиль ставит МЕТКУ ПАКЕТА (не connmark), поэтому в
+        # /proc/net/nf_conntrack её не видно — единственный признак «профиль
+        # реально срабатывал» это счётчик пакетов на правиле mark.
+        _pk=$("$IPT" -t mangle -vnL "$CHAIN" 2>/dev/null | awk -v s="$_sn" '$0 ~ s { print $1; exit }')
+        _pk=${_pk:-0}
+        if [ "$_pk" = "0" ]; then
+            echo "      пакетов помечено: 0 — профиль ещё ни разу не сработал (адрес из списка не совпал ни с одним потоком)"
+        else
+            echo "      пакетов помечено: $_pk"
+        fi
     done
     # Метки профилей могут совпасть с чужой политикой (Keenetic и т.п.) — покажем все
     # правила с нашими метками, чтобы это было видно в отчёте.

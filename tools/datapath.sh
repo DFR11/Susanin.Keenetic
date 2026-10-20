@@ -450,13 +450,47 @@ mss_clamp_rules() {
             fi
         done
     else
-        for m in "$MARK_OK" "$MARK_TEST"; do
+        # Только помеченные (VPN) потоки. Клампим по CONNMARK, а не по skb-метке:
+        # skb-метка ставится на входе из LAN, поэтому SYN-ACK с туннеля раньше не
+        # клампился — а именно он задаёт размер отдачи клиента в туннель.
+        # Плюс метки профилей (0x40000000/0x08000000/…): раньше профильный трафик
+        # шёл вообще без клампа (метка профиля не входит в mark_mask).
+        _mss_marks="$MARK_OK $MARK_TEST"
+        _pi=1
+        while [ "$_pi" -le 4 ]; do
+            _pm=$(cfg_val "profile${_pi}_mark" "")
+            if [ -z "$_pm" ]; then
+                case "$_pi" in
+                    1) _pm=0x40000000 ;; 2) _pm=0x08000000 ;;
+                    3) _pm=0x04000000 ;; 4) _pm=0x02000000 ;;
+                esac
+            fi
+            _mss_marks="$_mss_marks $_pm"
+            _pi=$((_pi + 1))
+        done
+        _cm_ok=1
+        for m in $_mss_marks; do
+            case "$m" in
+                "$MARK_OK"|"$MARK_TEST") _msk=$MARK_MASK ;;
+                *) _msk=$m ;;
+            esac
             if ! "ipt" -t mangle -A "$MSS_CHAIN" -p tcp --tcp-flags SYN,RST SYN \
-                    -m mark --mark "$m/$MARK_MASK" -j TCPMSS $_tgt 2>/dev/null; then
-                say "mss_clamp: цель TCPMSS недоступна (модуль?) — пропускаю"
-                mss_clamp_clean; return 0
+                    -m connmark --mark "$m/$_msk" -j TCPMSS $_tgt 2>/dev/null; then
+                _cm_ok=0
+                break
             fi
         done
+        if [ "$_cm_ok" = "0" ]; then
+            # Ядро без xt_connmark — остаёмся на прежнем поведении (skb-метка).
+            "ipt" -t mangle -F "$MSS_CHAIN" 2>/dev/null || true
+            for m in "$MARK_OK" "$MARK_TEST"; do
+                if ! "ipt" -t mangle -A "$MSS_CHAIN" -p tcp --tcp-flags SYN,RST SYN \
+                        -m mark --mark "$m/$MARK_MASK" -j TCPMSS $_tgt 2>/dev/null; then
+                    say "mss_clamp: цель TCPMSS недоступна (модуль?) — пропускаю"
+                    mss_clamp_clean; return 0
+                fi
+            done
+        fi
     fi
     if ! "ipt" -t mangle -A FORWARD -j "$MSS_CHAIN" 2>/dev/null; then
         say "mss_clamp: не удалось встроить цепочку $MSS_CHAIN — пропускаю"
@@ -465,12 +499,27 @@ mss_clamp_rules() {
     say "mss_clamp=$_desc (lan=$MSS_CLAMP_LAN)"
 }
 
+# Профили: RETURN для адресов профилей в НАШЕЙ цепочке. datapath пересобирает
+# SUSANIN (в т.ч. после пересборки netfilter силами NDM), поэтому правила
+# профилей восстанавливаем и здесь — иначе профиль молча перестаёт срабатывать
+# до следующего `profiles.sh up`. Наборы профилей узнаём по имени.
+profiles_return_rules() {
+    [ -n "$IPSET" ] || return 0
+    _sets=$("$IPSET" list -n 2>/dev/null | grep '^susanin_prof_' || true)
+    [ -n "$_sets" ] || return 0
+    for _ps in $_sets; do
+        "ipt" -t mangle -D "$CHAIN" -m set --match-set "$_ps" dst -j RETURN >/dev/null 2>&1 || true
+        "ipt" -t mangle -I "$CHAIN" -m set --match-set "$_ps" dst -j RETURN >/dev/null 2>&1 || true
+    done
+}
+
 command_up() {
     backup
     ensure_sets
     ensure_chain
     rule_priv
     rule_mark
+    profiles_return_rules
     ensure_jump
     ensure_table
     ipv6_block_rules

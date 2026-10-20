@@ -116,17 +116,42 @@ echo "egress: ${EGR:-?}"
 echo "lan: ${LAN:-?} / ${SUB:-?}"
 echo "table: $TBL, disk_mode: ${DM:-?}, vpn_always_dns: ${DNS_CFG:-<auto>}"
 
+# Наши метки (как в susanin.conf): по ним проверяются правила ip rule.
+MT=$(cfg mark_test); [ -n "$MT" ] || MT=0x10000000
+MO=$(cfg mark_ok);   [ -n "$MO" ] || MO=0x20000000
+MM=$(cfg mark_mask); [ -n "$MM" ] || MM=0x30000000
+echo "marks: test=$MT ok=$MO mask=$MM"
+
+# WAN-IP нужен, чтобы отличить блокировку на стороне сайта (403 по IP) от
+# проблем маршрутизации: см. TROUBLESHOOTING, «Сайт отдаёт 403/блок-страницу».
+if command -v ip >/dev/null 2>&1; then
+    WANIP=$(ip route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n1)
+    [ -n "$WANIP" ] && echo "WAN-IP: $WANIP"
+fi
+
 if [ -n "$EGR" ]; then
     oldifs=$IFS; IFS=','
     for i in $EGR; do
         IFS=$oldifs
         i=$(printf '%s' "$i" | tr -d ' \t')
-        if [ -e "/sys/class/net/$i" ]; then
-            echo "egress $i: существует"
-        else
-            echo "egress $i: ОТСУТСТВУЕТ"
-            rec "VPN-интерфейс '$i' не найден. Включите VPN-подключение или укажите верное имя в egress_interface."
-        fi
+        case "$i" in
+            tproxy|xray)
+                # Кандидат-резерв через Xray (не интерфейс): проверяем порт.
+                _tp=$(cfg tproxy_port); [ -n "$_tp" ] || _tp=12345
+                if netstat -lnt 2>/dev/null | grep -q ":${_tp}[ \t]"; then
+                    echo "egress $i: Xray слушает порт $_tp — кандидат доступен"
+                else
+                    echo "egress $i: Xray НЕ слушает порт $_tp — переключение в tproxy не произойдёт (fail-safe)"
+                    rec "Кандидат '$i' в egress_interface: Xray не слушает tproxy_port=$_tp. Запустите /opt/etc/init.d/S93xray-tproxy start или уберите '$i' из списка."
+                fi ;;
+            *)
+                if [ -e "/sys/class/net/$i" ]; then
+                    echo "egress $i: существует"
+                else
+                    echo "egress $i: ОТСУТСТВУЕТ"
+                    rec "VPN-интерфейс '$i' не найден. Включите VPN-подключение или укажите верное имя в egress_interface."
+                fi ;;
+        esac
         IFS=','
     done
     IFS=$oldifs
@@ -239,11 +264,30 @@ if command -v iptables >/dev/null 2>&1; then
     fi
 fi
 if command -v ip >/dev/null 2>&1; then
-    if ip rule show 2>/dev/null | grep -q "lookup $TBL"; then
-        echo "ip rule -> table $TBL: ok"
-    else
-        echo "ip rule -> table $TBL: НЕТ"
-        rec "Нет правила ip rule на таблицу $TBL — трафик идёт мимо VPN. Перезапустите: susanin.sh restart"
+    # rule_marks <mark> <mask> <table> — есть ли НАШЕ правило. Ядро печатает
+    # «fwmark 0x20000000/0x30000000 lookup 100», но старые сборки ставили правило
+    # без маски — принимаем обе формы (как src/ops.c: rule_fwmark_present()).
+    rule_marks() {
+        ip rule show 2>/dev/null | grep -Eq "fwmark $1(/$2)? .*lookup $3( |\$)"
+    }
+    for _m in "test:$MT" "ok:$MO"; do
+        _nm=${_m%%:*}; _mk=${_m#*:}
+        if rule_marks "$_mk" "$MM" "$TBL"; then
+            echo "ip rule $_nm (fwmark $_mk/$MM) -> table $TBL: ok"
+        else
+            echo "ip rule $_nm (fwmark $_mk/$MM) -> table $TBL: НЕТ"
+            rec "Нет правила ip rule для метки $_nm (fwmark $_mk/$MM) на таблицу $TBL — этот трафик идёт мимо VPN. Перезапустите: susanin.sh restart"
+        fi
+    done
+    # Чужие правила на НАШЕЙ таблице: иначе диагностика пишет «ok» при том, что
+    # наши правила сняты, а на таблицу смотрит кто-то другой (замечание 2026-10-10).
+    _foreign=$(ip rule show 2>/dev/null | grep "lookup $TBL" 2>/dev/null | \
+               grep -v "fwmark $MT" | grep -v "fwmark $MO" | \
+               grep -vE 'fwmark 0xffffa' | head -n3)
+    if [ -n "$_foreign" ]; then
+        echo "внимание: на таблице $TBL есть ЧУЖИЕ правила:"
+        printf '  %s\n' "$_foreign"
+        rec "На таблице $TBL найдены правила с другими метками (другое ПО или старая версия). Susanin.Keenetic их не создаёт; если они перехватывают трафик — уберите их сами или смените routing_table."
     fi
     if ip route show table "$TBL" 2>/dev/null | grep -q '^default'; then
         echo "default в table $TBL: ok"
@@ -320,7 +364,10 @@ check_list() {
     fi
     tot=0; ok=0; zone=0; idx=0; hij=0; hijex=""
     zex=""
-    while IFS= read -r raw; do
+    # `|| [ -n "$raw" ]` — иначе последняя строка списка без перевода строки в
+    # конце не проверяется: read при EOF без разделителя возвращает не-ноль,
+    # хотя значение уже присвоено (та же ловушка, что была в tools/profiles.sh).
+    while IFS= read -r raw || [ -n "$raw" ]; do
         e=$(printf '%s' "$raw" | sed 's/#.*//' | tr -d ' \t\r')
         [ -z "$e" ] && continue
         tot=$((tot + 1))
@@ -380,6 +427,24 @@ if [ -f "$ETCDIR/vpn_always.txt" ] && [ -f "$ETCDIR/vpn_never.txt" ]; then
     fi
 fi
 
+# Wildcard-зоны в vpn_never: пиннится только apex + типовые поддомены, поэтому
+# «сайт открывается частично» — типичный симптом. Сверяем, сколько адресов реально
+# в наборе, и напоминаем правило «для сервисов с несколькими хостами — явные имена».
+if [ -f "$ETCDIR/vpn_never.txt" ]; then
+    _zw=$(grep -vE '^[[:space:]]*(#|$)' "$ETCDIR/vpn_never.txt" 2>/dev/null | grep -c '^\*\.' || true)
+    _nn=0
+    if command -v ipset >/dev/null 2>&1; then
+        _nn=$(ipset list susanin_never 2>/dev/null | grep -cE '^[0-9]+\.' || true)
+    fi
+    echo "vpn_never: wildcard-зон=${_zw:-0}, адресов в наборе susanin_never=${_nn:-0}"
+    if [ "${_zw:-0}" -gt 0 ]; then
+        rec "В vpn_never есть wildcard-зоны ($_zw): по зоне пиннятся apex и типовые поддомены (www/cdn/api/static/m + пробы), но у сервисов с несколькими хостами часть адресов может остаться вне набора — тогда «сайт открывается частично». Для таких сервисов указывайте явные имена, а не wildcard."
+    fi
+    if [ "${_zw:-0}" -gt 0 ] && [ "${_nn:-0}" -le "${_zw:-0}" ] && command -v ipset >/dev/null 2>&1; then
+        rec "Набор susanin_never почти пуст при непустом списке: зоны не разрешились (DNS) либо правила не применены. Проверьте вывод выше и перезапустите: susanin.sh reload"
+    fi
+fi
+
 # Подмена DNS (127.0.0.1/::1): домен не завернуть в VPN, пока резолвер не исправлен.
 if [ "${DNS_HIJ:-0}" -gt 0 ]; then
     echo
@@ -395,6 +460,46 @@ fi
 
 if [ -z "$DNS_CFG" ] && [ -z "$DNS" ]; then
     echo "  DNS для списков: auto (системный, при 127.0.0.1 — адрес LAN-моста)"
+fi
+
+# -------------------------------------------------- OpenConnect (серверный VPN)
+# Регрессия 2026-10-14: клиенты OpenConnect не обрабатывались, потому что `oc*`
+# не было в lan_interfaces (tun создаётся по требованию клиента и теряется при
+# «rescan» с отключённым телефоном). Диагностика обязана это показывать.
+sec "OpenConnect (серверный VPN на этом роутере)"
+OC_SRV=0
+[ -f /var/run/ocserv/ocserv.conf ] && OC_SRV=1
+if command -v iptables >/dev/null 2>&1; then
+    iptables -t mangle -S _NDM_OCSRVVPN_MARK >/dev/null 2>&1 && OC_SRV=1
+fi
+if command -v ipset >/dev/null 2>&1; then
+    ipset list -n _NDM_SRV_OCSRVVPN >/dev/null 2>&1 && OC_SRV=1
+fi
+if [ "$OC_SRV" = "1" ]; then
+    echo "OpenConnect-сервер: обнаружен"
+    case ",$LAN," in
+        *oc*)
+            echo "lan_interfaces: содержит oc* — клиенты обрабатываются" ;;
+        *)
+            echo "lan_interfaces: НЕТ ни одного oc*"
+            rec "На роутере работает OpenConnect-сервер, а в lan_interfaces нет 'oc+': клиенты (телефон/ноутбук) не обрабатываются — часть сайтов висит, обычный интернет «тормозит». Добавьте 'oc+' В КОНЕЦ списка lan_interfaces и выполните: susanin.sh restart" ;;
+    esac
+    case ",$LAN," in
+        *oc*) ;;
+        *)
+            if printf '%s' "$SUB" | grep -q '172\.16\.'; then
+                rec "Полу-состояние: подсеть пула OpenConnect (172.16.x) есть в lan_subnets, но 'oc+' в lan_interfaces нет. Именно так теряется обработка клиентов после 'rescan' при отключённом телефоне; 'discover' в 0.4.0.RC1 возвращает 'oc+' сам."
+            fi ;;
+    esac
+    if command -v iptables >/dev/null 2>&1; then
+        _occ=$(iptables -t mangle -vnL SUSANIN 2>/dev/null | grep -c 'oc' || true)
+        echo "правила с -i oc* в SUSANIN: ${_occ:-0}"
+        if [ "${_occ:-0}" -eq 0 ]; then
+            rec "В цепочке SUSANIN нет правил с -i oc* — трафик клиентов OpenConnect проходит мимо (счётчики не растут). Проверьте lan_interfaces и перезапустите агент."
+        fi
+    fi
+else
+    echo "OpenConnect-сервер: не обнаружен"
 fi
 
 # ------------------------------------------------------------------- qWDTT
@@ -476,6 +581,29 @@ else
 fi
 
 # ------------------------------------------------- датаплейн / IPv6 / IPTV
+# ----------------------------------------------------- health (по логу агента)
+# Проба здоровья по каждому egress — самая частая причина «сайты не открываются,
+# а VPN работает»: агент считает туннель мёртвым. Показываем последние переходы
+# и предупреждения из лога (без чтения состояния демона).
+sec "Health (по логу)"
+HLOG=/opt/susanin/var/susanin.log
+if [ -r "$HLOG" ]; then
+    _hlast=$(grep -E 'egress [^ ]+ (UP|DOWN)|all egress DOWN|health:' "$HLOG" 2>/dev/null | tail -n 5)
+    if [ -n "$_hlast" ]; then
+        printf '%s\n' "$_hlast"
+    else
+        echo "переходов UP/DOWN в логе нет (всё стабильно)"
+    fi
+    if tail -n 200 "$HLOG" 2>/dev/null | grep -q 'all egress DOWN'; then
+        if command -v ip >/dev/null 2>&1 && \
+           ip route get 1.1.1.1 2>/dev/null | grep -q .; then
+            rec "В логе есть «all egress DOWN», но прямой маршрут (WAN) работает. Проверьте ICMP до health_probe с egress вручную и посмотрите время простоя: с 0.4.0.RC1 агент дополнительно пробует TCP-пробу на health_tcp_port и пишет простой в лог раз в 5 минут. Если ICMP молчит, а ping/HTTPS через VPN идут — дело в залипшем NAT-состоянии на промежуточном сервере (см. TROUBLESHOOTING, «all egress DOWN»)."
+        fi
+    fi
+else
+    echo "лог $HLOG недоступен"
+fi
+
 sec "Датаплейн, IPv6 и IPTV"
 REPROV=/opt/susanin/var/dp-reprov
 if [ -f "$REPROV" ]; then
@@ -495,6 +623,25 @@ if command -v ip >/dev/null 2>&1; then
     # MTU/MSS: на PPPoE (MTU 1492) без зажатия MSS крупные пакеты не проходят →
     # сайты грузятся частично/не открываются. Проверяем WAN MTU и наличие clamp.
     _wan=$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')
+    # MSS vs MTU: значение mss_clamp не должно превышать MTU egress минус 40
+    # (20 IP + 20 TCP). Иначе на каждом соединении фрагментация/PMTU-пауза —
+    # «страница открывается 1–2 с» через профильный туннель (стенд 2026-10-12).
+    _msscfg=$(cfg mss_clamp)
+    _egfirst=$(printf '%s' "$EGR" | cut -d, -f1 | tr -d ' \t')
+    case "$_msscfg" in
+        ''|0|pmtu|auto) ;;
+        *[!0-9]*) rec "mss_clamp='$_msscfg' — некорректное значение (ожидается число, 'pmtu' или 0)." ;;
+        *)
+            _emtu=""
+            [ -n "$_egfirst" ] && _emtu=$(cat "/sys/class/net/$_egfirst/mtu" 2>/dev/null || true)
+            [ -z "$_emtu" ] && [ -n "$_wan" ] && _emtu=$(cat "/sys/class/net/$_wan/mtu" 2>/dev/null || true)
+            if [ -n "$_emtu" ]; then
+                _limit=$((_emtu - 40))
+                if [ "$_msscfg" -gt "$_limit" ]; then
+                    rec "mss_clamp=$_msscfg больше предела для MTU $_emtu ($_limit = MTU-40): крупные пакеты будут фрагментироваться или теряться — страницы через туннель открываются долго. Поставьте mss_clamp=pmtu (или $_limit)."
+                fi
+            fi ;;
+    esac
     if [ -n "$_wan" ] && [ -r "/sys/class/net/$_wan/mtu" ]; then
         _mtu=$(cat "/sys/class/net/$_wan/mtu" 2>/dev/null)
         _mss=0; iptables -t mangle -L SUSANIN_MSS >/dev/null 2>&1 && _mss=1

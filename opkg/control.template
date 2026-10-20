@@ -1,0 +1,13 @@
+Package: susanin-keenetic
+Version: {{VER}}
+Depends: ipset, iptables, ca-certificates, conntrack
+Section: net
+Architecture: {{ARCH}}
+Installed-Size: {{SIZE}}
+Maintainer: R17a <https://github.com/R17a/Susanin.Keenetic>
+Source: https://github.com/R17a/Susanin.Keenetic
+Description: Адаптивная маршрутизация через VPN для Keenetic (Entware)
+ Автоматически находит заблокированные направления по поведению соединений
+ (conntrack) и уводит их в VPN-туннель, при падении туннеля — fail-open DIRECT.
+ Пакет ставит демон susanin-agent, скрипты датаплейна, init-скрипты Entware,
+ веб-панель и диагностику. Конфиг и списки при обновлении не перезаписываются.

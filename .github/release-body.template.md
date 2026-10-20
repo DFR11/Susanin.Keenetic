@@ -44,8 +44,14 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/{{TAG}}/tools/
 ### Сборки
 - архивы: `susanin-keenetic-deploy-mipsel.tar.gz`, `…-mips.tar.gz`,
   `…-aarch64.tar.gz`, `…-armv7.tar.gz`, `…-x86_64.tar.gz` и `SHA256SUMS`;
+- пакеты Entware: `susanin-keenetic_{{TAG}}_mipsel-3.4.ipk`, `…_mips-3.4.ipk`,
+  `…_aarch64-3.10.ipk`, `…_armv7sf-k3.2.ipk`, `…_x86-64.ipk` (`opkg install <файл>.ipk`);
 - контейнер: `ghcr.io/r17a/susanin.keenetic:{{TAG}}` (+`latest`).
 
 **Проверено**: mipsel — Keenetic Viva, KeeneticOS 5.1.4–5.1.5, Entware
 (+ клиент OpenConnect). Остальные архитектуры собраны и приложены готовыми
 архивами, но на живом железе не тестировались — сообщайте об ошибках в Issues.
+
+### Благодарности
+За помощь проекту (тестирование на реальных роутерах, отчёты с логами, разбор
+проблем) — спасибо **Gave_Karen**, **pegakmop**, **NJmist**.
