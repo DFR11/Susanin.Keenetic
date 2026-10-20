@@ -14,7 +14,7 @@
 opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
 
 # 2. Установка (одной строкой)
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh | sh
 
 # 3. Проверка
 sh /opt/susanin/tools/susanin.sh status
@@ -28,7 +28,7 @@ sh /opt/susanin/tools/susanin.sh status
 Для старых BusyBox (где `tar` не знает `--exclude`) и установки пакетом:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh | sh -s -- --yes
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
 # пакетом .ipk:  sh -s -- --yes --ipk
 ```
 
@@ -194,7 +194,7 @@ CIDR; `#` — комментарий). Адрес обрабатывается �
 Сам бинарь Xray в поставку не входит — его скачивает установщик:
 ```sh
 sh bootstrap.sh --with-xray --yes                    # tar-архив
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh \
   | sh -s -- --ipk --with-xray-tproxy                 # пакет .ipk
 ```
 (Xray ставится в `/opt/sbin/xray`, SHA256 сверяется; конфиг-шаблон —
@@ -227,7 +227,7 @@ sh /opt/susanin/tools/susanin.sh uninstall --purge # удалить всё
 установщику определить архитектуру и поставить пакет:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh | sh -s -- --ipk
 ```
 
 Он скачает нужный `.ipk` из последнего релиза в `/opt/tmp`, сверит SHA256 по

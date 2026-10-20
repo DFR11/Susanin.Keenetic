@@ -209,7 +209,7 @@ Susanin.Keenetic может выносить помеченный трафик �
 ```sh
 # 1) вместе с установкой: любой способ, флаг --with-xray(-tproxy)
 sh bootstrap.sh --with-xray --yes                       # tar-архив
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh \
   | sh -s -- --ipk --with-xray-tproxy                    # пакет .ipk
 # 2) вручную: develop/xray/xray.<arch> -> /opt/sbin/xray, chmod +x,
 #    sha256 сверить с xray/SHA256SUMS
@@ -414,8 +414,12 @@ opkg update && opkg install ca-certificates wget-ssl
 **Способ 1 — установщик сам определит архитектуру и поставит пакет** (рекомендуется):
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh | sh -s -- --ipk
 ```
+
+> `--ipk` появился в 0.4.0.RC1 — скрипт берётся из ветки `develop` (там RC1).
+> Ответ `ERROR: unknown arg: --ipk` означает, что взят скрипт из `main` (там этой
+> версии ещё нет) или старый кэш, а не ошибку флага.
 
 Что делает `--ipk`: определяет архитектуру Entware (`opkg print-architecture`,
 нормализация `mipsel-3.4` → `mipsel` и т.д.), скачивает
@@ -431,7 +435,7 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.s
 
 ```sh
 # VLESS/REALITY пакетом: Xray в .ipk не входит, установщик скачает его отдельно
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh \
   | sh -s -- --ipk --with-xray-tproxy
 ```
 
@@ -497,13 +501,13 @@ opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
 определит LAN и VPN, затем спросит подтверждение:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh | sh
 ```
 
 Либо поставьте curl и используйте его:
 ```sh
 opkg install curl
-curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh | sh
 ```
 
 Архитектура определяется автоматически по данным Entware
@@ -530,13 +534,14 @@ Xray (`--with-xray`):
 
 ```sh
 cd /opt/tmp
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh | sh -s -- --yes
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
 # пакетом:           sh -s -- --yes --ipk
 # пакетом + Xray:    sh -s -- --yes --ipk --with-xray
 # tar-архив + Xray:  sh -s -- --yes --with-xray
 ```
-По умолчанию берётся **последний релиз**; конкретную версию задаёт
-`--version vX.Y.Z`.
+По умолчанию берётся **последний релиз** (`--channel stable`). Пока RC1 не выпущен,
+для тестовой сборки добавьте `--channel dev --branch develop`; конкретную версию
+релиза задаёт `--version vX.Y.Z`.
 
 Флаги: `--channel stable|dev`, `--version`, `--file`, `--url`, `--check`,
 `--dry-run`, `--ipk`, `--with-xray`, `--verify`, `--tmp DIR`; остальные

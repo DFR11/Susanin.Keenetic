@@ -22,8 +22,10 @@ Release-сборкам и для dev-сборки не используются.
    `opkg` (учёт пакета, `opkg remove`, конфиг и списки не перезаписываются):
    ```sh
    opkg update && opkg install ca-certificates wget-ssl
-   wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
+   wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh | sh -s -- --ipk
    ```
+   Если скрипт ответил `ERROR: unknown arg: --ipk` — взят `main` (там этой версии
+   ещё нет) или старый кэш, а не ошибка флага: скрипт нужен из `develop`.
    Режим VLESS/REALITY — добавьте `--with-xray-tproxy` (Xray скачается отдельно).
    Вручную (если нужен контроль над файлом) — скачать, **сверить SHA256** и потом
    ставить (файл и версию в URL подставьте свои — таблица в [README.md](README.md)):
@@ -42,7 +44,7 @@ Release-сборкам и для dev-сборки не используются.
 2. **Установщик** (работает и там, где `tar` не знает `--exclude`):
    ```sh
    cd /opt/tmp
-   wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh | sh -s -- --yes
+   wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
    ```
    Флаги: `--check` (показать arch/ядро/BusyBox), `--file`, `--channel stable`,
    `--ipk` (ставить пакетом), `--with-xray` (Xray + tproxy-режим), `--verify`,
