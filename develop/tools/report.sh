@@ -68,7 +68,9 @@ run() { echo "----- $* -----"; "$@" 2>&1; }
 
     sec "INTERFACES / MTU"
     ip link show 2>/dev/null | grep -E '^[0-9]+:'
-    for i in $(ls /sys/class/net 2>/dev/null); do
+    for i in /sys/class/net/*; do
+        [ -e "$i" ] || continue
+        i=${i##*/}
         case "$i" in
             nwg*|wg*|amnezia*|awg*)
                 printf "%s mtu: " "$i"; cat "/sys/class/net/$i/mtu" 2>/dev/null ;;
