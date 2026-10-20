@@ -17,7 +17,24 @@ Release-сборкам и для dev-сборки не используются.
 
 ## Установка
 
-1. **Установщик** (работает и там, где `tar` не знает `--exclude`):
+1. **Пакетом Entware `.ipk`** (0.4.0.RC1+, рекомендуемый способ) — архитектура
+   определяется автоматически, файл скачивается из релиза и ставится штатным
+   `opkg` (учёт пакета, `opkg remove`, конфиг и списки не перезаписываются):
+   ```sh
+   opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
+   wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
+   ```
+   Вручную (если нужен контроль над файлом):
+   ```sh
+   mkdir -p /opt/tmp
+   wget -O /opt/tmp/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk \
+     https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
+   opkg install /opt/tmp/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
+   ```
+   Имя файла под свою архитектуру (`opkg print-architecture`) — по таблице в
+   [README.md](README.md) → «Пакетом Entware `.ipk`».
+
+2. **Установщик** (работает и там, где `tar` не знает `--exclude`):
    ```sh
    cd /opt/tmp
    wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
@@ -25,7 +42,7 @@ Release-сборкам и для dev-сборки не используются.
    Флаги: `--check` (показать arch/ядро/BusyBox), `--file`, `--channel stable`,
    `--with-xray`, `--verify`, `--tmp`. Подробности: `sh bootstrap.sh --help`.
 
-2. **Вручную из архива**:
+3. **Вручную из архива**:
    ```sh
    mkdir -p /opt/tmp/sus-dist && cd /opt/tmp/sus-dist
    wget -O susanin-dev.tar.gz <ССЫЛКА_НА_АРХИВ>
@@ -54,8 +71,14 @@ Release-сборкам и для dev-сборки не используются.
 
 ## Проверка после установки
 ```sh
+susanin status        # служба, цепочка, ip rule, таблица (короткий вызов)
+susanin version       # точная версия сборки — то же, что susanin-agent version
+susanin diagnose      # окружение, правила, списки, рекомендации
+```
+Если симлинка `susanin` нет (его ставит установщик в `/opt/bin`), те же команды:
+```sh
 sh /opt/susanin/tools/susanin.sh status
-/opt/susanin/bin/susanin-agent version      # покажет точную версию сборки
+/opt/susanin/bin/susanin-agent version
 ```
 
 ## Настройка

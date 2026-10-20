@@ -223,6 +223,13 @@ TCP/UDP проверяются безопасным тестом одного а
 > Обычный режим (`egress_type=interface`, VPN из «Других подключений», `nwg*`)
 > сохранён и не изменён. XRay и XKeen одновременно использовать не нужно; для
 > XRay используйте встроенный tproxy-режим Susanin.Keenetic.
+>
+> **Резервный путь «интерфейс → Xray» делается штатно, средствами движка:** в
+> `egress_interface` добавляется кандидат `tproxy` (например
+> `egress_interface=nwg1,tproxy`) — см. таблицу полей конфига ниже. Отдельный
+> внешний наблюдатель (`egress-failover.sh`) в поставку **не входит** и не нужен:
+> два механизма одновременно конфликтуют. Если очень нужен ручной «аварийный»
+> переключатель — он остаётся в репозитории как dev-инструмент.
 
 ## Вместе с qWDTT_Server_Keenetic
 
@@ -326,6 +333,27 @@ sh /opt/susanin/tools/profiles.sh down     # снять
 - список профиля задаётся ключами или файлом; автообучение (`profileN_auto`) и
   фейловер профиля (`profile_failover`) поддерживаются.
 
+Грабли (все — проверенные причины «профиль не работает»; подробнее —
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md)):
+
+- **файл списка должен заканчиваться переводом строки**: последняя строка без `\n`
+  в сборках до 0.4.0-dev8 терялась — файл из одной строки давал пустой набор
+  (`entries=0`), и профиль молча никого не метил;
+- **`reload` профили не применяет** — после правки конфига или сохранения в
+  панели нужен `sh /opt/susanin/tools/profiles.sh up` (или `S94susanin restart`);
+- **профиль забирает только трафик с нулевой меткой**: адрес, который основная
+  схема уже выучила (`susanin_ok_*`) или держит в `vpn_always`, уйдёт в основной
+  туннель, а не в профиль. Обходной путь до исправления — `susanin.sh forget <IP>`
+  и запись адреса в `vpn_never.txt` (тогда основная цепочка делает `RETURN`, и
+  метку ставит профиль);
+- **туннель профиля с MTU < 1500 требует `mss_clamp`**: ставьте `mss_clamp=pmtu`
+  и `mss_clamp_lan=1`, иначе рукопожатие проходит, а страница «висит»;
+- проверка «сработал ли профиль» — счётчик пакетов
+  (`iptables -t mangle -vnL SUSANIN_PROFILES`): профиль ставит метку пакета, в
+  `/proc/net/nf_conntrack` её не видно;
+- при нескольких профилях задавайте `profileN_mark` вручную: сейчас всем
+  профилям по умолчанию подставляется одна и та же метка `0x40000000`.
+
 Смотрите также «Вместе с qWDTT_Server_Keenetic» и [XRAY.md](XRAY.md).
 
 ## Важно: «Приоритеты подключений» Keenetic и Susanin.Keenetic
@@ -363,6 +391,76 @@ ndmc -c "show running-config" | grep -i "ip policy"
   через VPN).
 
 ## Установка / обновление / удаление
+
+### Пакетом Entware `.ipk` (начиная с 0.4.0.RC1)
+
+**Способ 1 — установщик сам определит архитектуру и поставит пакет** (рекомендуется):
+
+```sh
+opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
+```
+`--ipk` включает режим пакета: установщик определяет архитектуру Entware (как и
+для обычной установки), скачивает нужный `.ipk` из последнего релиза в `/opt/tmp`,
+сверяет SHA256 по `SHA256SUMS` из релиза и выполняет `opkg install`.
+Полезные флаги: `--version v0.4.0.RC1` (конкретная версия), `--force`
+(переустановить поверх: `opkg install --force-reinstall`), `--yes` (без вопросов),
+`--arch mipsel|mips|aarch64|armv7|x86_64` (если автоопределение не сработало).
+Если `curl` уже стоит, вместо `wget -qO- … | sh` можно использовать
+`curl -fsSL … | sh -s -- --ipk`.
+
+**Способ 2 — вручную**, если нужен контроль над файлом. Сначала посмотрите
+архитектуру Entware:
+
+```sh
+opkg print-architecture | awk '{print $2}'
+```
+
+| Архитектура Entware | Файл из релиза |
+|---|---|
+| `mipsel-3.4` (MT7621: Viva, Giga, Ultra и т.п.) | `susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk` |
+| `mips-3.4` | `susanin-keenetic_0.4.0.RC1_mips-3.4.ipk` |
+| `aarch64-3.10` | `susanin-keenetic_0.4.0.RC1_aarch64-3.10.ipk` |
+| `armv7sf-k3.2` | `susanin-keenetic_0.4.0.RC1_armv7sf-k3.2.ipk` |
+| `x86-64` | `susanin-keenetic_0.4.0.RC1_x86-64.ipk` |
+
+Скачивание и установка (подставьте свой файл из таблицы и нужный тег):
+
+```sh
+mkdir -p /opt/tmp
+wget -O /opt/tmp/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk \
+  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
+opkg install /opt/tmp/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
+susanin status && susanin diagnose
+```
+
+Без `wget-ssl` (у BusyBox-wget нет HTTPS) качайте через `curl`:
+`curl -fL -o /opt/tmp/<файл>.ipk <URL>`. Проверить контрольную сумму:
+
+```sh
+wget -O /opt/tmp/SHA256SUMS \
+  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1/SHA256SUMS
+cd /opt/tmp && sha256sum -c SHA256SUMS 2>/dev/null | grep susanin-keenetic
+```
+
+Для последнего релиза имя файла содержит версию, поэтому подставьте её из
+страницы релиза — либо просто используйте «Способ 1» с `--ipk`.
+
+Пакет ставит демон, скрипты, init-скрипты Entware, веб-панель и документацию в
+`/opt/susanin`. Конфиг (`susanin.conf`), списки `vpn_always`/`vpn_never`,
+состояние и профили при обновлении **не перезаписываются**; при первой установке
+конфиг создаётся из `config.example.conf` — проверьте в нём `egress_interface` и
+`lan_interfaces`. Обновление = `opkg install` нового `.ipk`; удаление:
+
+```sh
+opkg remove susanin-keenetic      # служба, init и правила снимаются; данные остаются
+rm -rf /opt/susanin               # если нужно удалить и конфиг/списки/состояние
+```
+
+Сборка пакетов — `tools/make-ipk.sh` (см. «Сборка»); `.ipk` прикладываются к
+релизам рядом с tar-архивами.
+
+### Скриптом (tar-архив)
 
 Сначала поставьте нужные пакеты Entware: сертификаты и `wget-ssl` — чтобы `wget`
 скачал релиз по HTTPS (у BusyBox-wget HTTPS нет), и зависимости — `ipset`,
@@ -410,6 +508,11 @@ sh install.sh --yes
 cd /opt/tmp
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
 ```
+
+> Имя dev-архива (`develop/susanin-keenetic-0.4.0-dev.tar.gz`) — **стабильное**,
+> оно не меняется от версии к версии: так не ломаются ссылки и команды, которые
+> уже раздали тестерам. Фактическая версия внутри архива — в
+> `susanin-agent version` (сейчас `0.4.0.RC1`).
 
 Флаги: `--channel dev|stable`, `--version`, `--file`, `--url`, `--check`,
 `--dry-run`, `--with-xray`, `--verify`, `--tmp DIR`; остальные (`--yes`, `--arch`,
@@ -461,6 +564,7 @@ sh /opt/susanin/tools/susanin.sh install    # datapath up + setup
 | Веб-панель | `sh /opt/susanin/tools/susanin.sh web {start\|stop\|restart\|status}` |
 | Состояние | `sh /opt/susanin/tools/susanin.sh status` (показывает `daemon:` и `web:`) |
 | Лог | `sh /opt/susanin/tools/susanin.sh log` |
+| Версия | `sh /opt/susanin/tools/susanin.sh version` (то же, что `susanin-agent version`) |
 | Снять правила | `sh /opt/susanin/tools/susanin.sh down` |
 | Убрать IP/домен из кэша | `sh /opt/susanin/tools/susanin.sh reset <ip|домен>` (синоним `forget`) |
 | Обновление | `sh /opt/susanin/tools/susanin.sh update vX.Y.Z` |
@@ -469,6 +573,17 @@ sh /opt/susanin/tools/susanin.sh install    # datapath up + setup
 
 ## CLI
 
+Короткий диспетчер (симлинк `/opt/bin/susanin`, его ставит установщик):
+```sh
+susanin version          # точная версия сборки (то же, что susanin-agent version)
+susanin status           # состояние службы, правил и таблицы
+susanin check            # состояние датаплейна
+susanin diagnose         # окружение, правила, списки, рекомендации
+susanin report           # полный отчёт в /opt/susanin/var/report.txt
+susanin restart | reload | rescan
+```
+
+Сам агент (`/opt/susanin/bin/susanin-agent`) — расширенный набор:
 ```
 susanin-agent version
 susanin-agent discover
@@ -503,9 +618,9 @@ docker build -f Dockerfile.cross -t susanin-build .
 
 | Поле | Назначение | По умолчанию |
 |---|---|---|
-| `egress_interface` | VPN-интерфейс(ы); несколько через запятую = фейловер | `nwg0` |
+| `egress_interface` | VPN-интерфейс(ы); несколько через запятую = фейловер. Можно указать `tproxy` (синоним `xray`) — резервный путь через Xray: проверяется SOCKS-пробой, при переключении датаплейн пересобирается в tproxy-режиме | `nwg0` |
 | `egress_address` | адрес(а) туннеля, по порядку с `egress_interface` | `10.8.1.1` |
-| `lan_interfaces` / `lan_subnets` | LAN, трафик которых анализируем | `br0,br1` |
+| `lan_interfaces` / `lan_subnets` | LAN, трафик которых анализируем. При OpenConnect-сервере добавьте в конец `oc+` (с 0.4.0.RC1 `discover` держит его сам) | `br0,br1` |
 | `routing_table` | номер таблицы (должен быть малым) | `100` |
 | `ok_ttl` | срок жизни подтверждённых адресов; `0` = бессрочно | `0` |
 | `fast_syn_min_op` | сколько SYN без ответа нужно для срабатывания | `2` (`1` = быстрее) |
@@ -602,6 +717,18 @@ tail -f /opt/susanin/var/soak.log        # Ctrl-C -> сводка с росто�
 - [DEPLOY.md](DEPLOY.md) — установка/обновление/удаление на роутере;
 - [XRAY.md](XRAY.md) — XRay/VLESS-REALITY и Susanin.Keenetic: совместимость, конфликты, XKeen;
 - `tools/susanin.sh`, `tools/datapath.sh` — управление демоном и правилами.
+
+## Благодарности
+
+Спасибо людям, которые помогали проекту — тестированием на своих роутерах,
+отчётами с логами, разбором проблем и предложениями по улучшению:
+
+- **Gave_Karen**
+- **pegakmop**
+- **NJmist**
+
+Ваши отчёты (conntrack, `iptables`, `diagnose.sh`) — то, без чего большинство
+исправлений в этом репозитории просто не нашлось бы. Спасибо!
 
 ## Поддержать проект
 

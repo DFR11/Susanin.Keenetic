@@ -390,6 +390,18 @@
 
   function loadAll() { load(); loadLists(); }
 
+  /* Высота липкой шапки в CSS-переменную: на узком экране шапка выше одной
+   * строки, и жёсткий top:76px у навигации ломал вёрстку (дефект 2026-10-14). */
+  (function trackTopbar() {
+    var bar = document.querySelector('.topbar');
+    if (!bar || !window.ResizeObserver) return;
+    var apply = function () {
+      document.documentElement.style.setProperty('--topbar-h', bar.offsetHeight + 'px');
+    };
+    new ResizeObserver(apply).observe(bar);
+    apply();
+  })();
+
   loadAll();
   loadChoices();   /* один раз: подсказки для полей конфигурации (config.js) */
   /* Список НЕ переопрашиваем таймером — иначе перерисовка мешает
