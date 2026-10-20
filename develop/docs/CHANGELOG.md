@@ -91,9 +91,16 @@
 - **CI на каждый push/PR** (`.github/workflows/ci.yml`): сборка с `-Werror`,
   `make test`, `sh -n` по всем скриптам, `shellcheck -S error`, пробная сборка
   `.ipk` для x86_64.
-- **Состав пакетов сведён к одному списку:** CI-архив и `.ipk` кладут те же
-  скрипты (`+soak.sh`, `+bootstrap.sh`) и фиксированный список документации;
-  приватный `docs/RECON.md` в `.ipk` больше не попадает.
+- **Состав поставки — единый список:** `packaging/manifest.txt` (и
+  `packaging/dev-only.txt` с причинами) читают `.ipk` (`tools/make-ipk.sh`),
+  CI-архив (`tools/stage-release.sh`) и dev-дистрибутив; `tools/check-shipping.sh`
+  сверяет манифест с `.ipk` и `develop/` и падает при расхождении, а «забытые»
+  файлы в `tools/` и `init/entware/` ловятся отдельными шагами. Приватный
+  `TESTBUILD.md` в `.ipk` не попадает (в dev-архиве он остаётся), а файл из
+  манифеста, которого нет в git, теперь ошибка сборки, а не «молча пропустить».
+- **Дублирование бинарников убрано:** `develop/bin/` больше не хранится в git —
+  его собирает `tools/repack-develop.sh` из `build/` (в dev-архив бинарники
+  по-прежнему входят).
 - **Внешний наблюдатель `egress-failover.sh` из поставки убран** (штатный путь —
   кандидат `tproxy` в движке); в `develop/` и `.ipk` его нет, исходники и тест
   остались dev-инструментом. Заодно в нём: `iface_check` (тесты/контейнеры),
@@ -106,7 +113,19 @@
 - **`.gitattributes`** покрывает `init/**`, `opkg/*`, `*.js`, `*.css`, `*.html`,
   `*.txt`, `*.yml` — CRLF в скриптах не появится даже при checkout на Windows.
 
-**Тесты:** добавлен host-тест `tests/test_classifier_media.c` — пороги `media_min_rate`/`media_min_age`, `media_ports` по умолчанию (без 80/443) и `clf_ip_in_cidr` (снятие покрывающего префикса).
+**Тесты:** добавлены host-тесты `tests/test_classifier_media.c` (пороги
+`media_min_rate`/`media_min_age`, `media_ports` по умолчанию без 80/443,
+`clf_ip_in_cidr`) и `tests/test_web_token.c` (сравнение токена, заголовок/cookie,
+подделка токена в URL/теле); в `make test` входит и shell-тест внешнего
+наблюдателя (`tests/test-egress-failover.sh`, 21 проверка).
+
+**Проверки на каждом push/PR:** сборка с `-Werror`, `make test`, `sh -n` по всем
+скриптам, `shellcheck -S error`, сборка `.ipk` и сверка состава поставки
+(`check-shipping`). Дополнительно проверено на «чистом чекауте» (копия только из
+git): `check-shipping` (манифест/`.ipk`/`develop`) — без расхождений,
+`stage-release` собирает архив, `make-ipk` собирает пакет.
+
+**Сборка:** 5 архитектур (mipsel, mips, aarch64, armv7, x86_64) без предупреждений; `make test` — все наборы проходят; `.ipk` для всех пяти архитектур приложены к релизу (`tools/make-ipk.sh`).
 
 **Сборка:** 5 архитектур (mipsel, mips, aarch64, armv7, x86_64) без предупреждений; `make test` — все наборы проходят; `.ipk` для всех пяти архитектур приложены к релизу (`tools/make-ipk.sh`).
 
