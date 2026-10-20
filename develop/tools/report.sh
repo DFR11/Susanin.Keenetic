@@ -79,6 +79,25 @@ run() { echo "----- $* -----"; "$@" 2>&1; }
         grep -iE 'mtu|mss' /var/run/ocserv/ocserv.conf 2>&1
     fi
 
+    # Клиенты серверного VPN: без этих снимков причина «с телефона по
+    # OpenConnect часть сайтов висит» в отчёте не видна (разбор 2026-10-14).
+    sec "OPENCONNECT (ocserv)"
+    if [ -f /var/run/ocserv/ocserv.conf ] || \
+       iptables -t mangle -S _NDM_OCSRVVPN_MARK >/dev/null 2>&1; then
+        echo "----- lan_interfaces / lan_subnets -----"
+        grep -E '^(lan_interfaces|lan_subnets)=' /opt/susanin/etc/susanin.conf 2>&1
+        echo "----- oc* адреса -----"
+        ip -4 addr show 2>/dev/null | grep -A1 -E '^[0-9]+: oc' 2>&1
+        echo "----- iptables -t mangle -S _NDM_OCSRVVPN_MARK -----"
+        iptables -t mangle -S _NDM_OCSRVVPN_MARK 2>&1 | head -10
+        echo "----- ipset list _NDM_SRV_OCSRVVPN -----"
+        ipset list _NDM_SRV_OCSRVVPN 2>&1 | head -15
+        echo "----- SUSANIN: правила с oc (со счётчиками) -----"
+        iptables -t mangle -vnL SUSANIN 2>/dev/null | grep -E 'oc' | head -10
+    else
+        echo "OpenConnect-сервер не обнаружен"
+    fi
+
     echo
     echo "===== END — send this output ====="
 } > "$OUT" 2>&1

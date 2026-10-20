@@ -51,3 +51,6 @@ ca-certificates ipset iptables conntrack wget-ssl:
   xray/           README.txt, SHA256SUMS, LICENSE (бинарников Xray в архиве нет —
                   они лежат в репозитории, develop/xray/; ставит их --with-xray)
   docs/           документация
+
+Благодарности: за помощь проекту (тестирование на реальных роутерах, отчёты с
+логами, разбор проблем) — Gave_Karen, pegakmop, NJmist.

@@ -198,6 +198,33 @@ sh /opt/susanin/tools/profiles.sh status
 ```
 Адрес обрабатывается **первым совпавшим** профилем.
 
+**Чек-лист перед жалобой «профиль не работает»** (каждый пункт — реальная причина,
+подробности в `TROUBLESHOOTING.md`, разделы про профили):
+
+```sh
+# 1) набор не пуст (entries>0). Файл списка обязан кончаться переводом строки:
+cat -A /opt/susanin/etc/profiles/<имя>.txt | tail -1     # строка кончается $, а не текстом
+ip link show <egress>                                    # интерфейс из profileN_egress существует
+
+# 2) профиль поднят и метит пакеты (счётчик должен расти при заходе на адрес):
+iptables -t mangle -vnL SUSANIN_PROFILES
+ip route get <IP> mark 0x40000000                        # ждём dev <egress> table <N>
+
+# 3) адрес не занят основной схемой — иначе профиль его не увидит (mark match 0x0):
+ipset test susanin_ok_tcp <IP>; ipset test susanin_test_tcp <IP>
+grep -n '<IP>' /opt/susanin/etc/vpn_always.txt /opt/susanin/etc/vpn_never.txt
+grep '<IP>' /opt/susanin/var/susanin.state               # «ok tcp <IP> …» = выучен
+
+# 4) MTU туннеля профиля и MSS (иначе страница открывается, но очень долго):
+ip link show <egress> | grep mtu                         # mss_clamp ≤ MTU−40, лучше pmtu
+grep -E '^mss_clamp' /opt/susanin/etc/susanin.conf
+```
+
+Важно: `profiles.sh up` — **не** то же самое, что `susanin.sh reload`. Релоад
+профили не поднимает; после правки конфига нужен `up` или `S94susanin restart`.
+Если адрес уже выучен основной схемой, до исправления (PLAN.md, п.17) помогает
+`susanin.sh forget <IP>` + запись адреса в `vpn_never.txt`.
+
    Тесты и суточный прогон (для тех, кто собирает из исходников)
 
 ```sh

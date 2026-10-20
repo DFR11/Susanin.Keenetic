@@ -453,6 +453,9 @@
     var i;
     if (!c || !v) return true;                 /* нечем сверять — не мешаем */
     if (kind === 'iface' || kind === 'ifacelist') {
+      /* Псевдо-кандидат резервного пути через Xray (0.4.0.RC1): не интерфейс
+       * системы, поэтому в choices его нет — считаем известным значением. */
+      if (v === 'tproxy' || v === 'xray') return true;
       var ifs = c.ifaces || [];
       for (i = 0; i < ifs.length; i++)
         if (ifs[i] && ifs[i].name === v) return true;
@@ -844,7 +847,8 @@
     if (fld.type === 'readonly') {
       var ro = document.createElement('div');
       ro.className = 'desc';
-      ro.textContent = tokenSet ? 'токен задан (значение скрыто)' : 'токен не задан — доступ без пароля';
+      ro.textContent = tokenSet ? 'токен задан (значение скрыто)'
+        : 'токен не задан — панель работает только на чтение (изменения запрещены). Задайте токен: susanin-agent config set web_token <секрет>';
       wrap.appendChild(ro);
       return wrap;
     }

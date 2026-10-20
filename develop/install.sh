@@ -3,6 +3,9 @@
 # Online (default): downloads the per-arch archive from GitHub Releases.
 #   curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
 #     | sh -s -- [--arch mipsel] [--version vX.Y.Z] [--yes]
+# Пакетом Entware (.ipk) из релиза, с автоопределением архитектуры:
+#   curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
+#     | sh -s -- --ipk [--version vX.Y.Z] [--yes]
 # Offline/local: run from an extracted archive (susanin-agent is next to this script):
 #   sh install.sh [--yes]
 # Prompts accept short answers: "y" or "yes". Use --yes|-y to skip all prompts.
@@ -26,9 +29,21 @@ NO_START=0
 DISK_MODE=""
 DEPS=0
 XRAYTUN=0
+USE_IPK=0
 
 say() { echo "[susanin] $*"; }
 die() { echo "[susanin] ERROR: $*" >&2; exit 1; }
+
+# Скачивание: curl или wget-ssl (у BusyBox-wget нет HTTPS).
+pick_fetch() {
+    if command -v curl >/dev/null 2>&1; then
+        fetch() { curl -fsSL "$1" -o "$2"; }
+    elif command -v wget >/dev/null 2>&1; then
+        fetch() { wget -qO "$2" "$1"; }
+    else
+        die "need curl or wget-ssl (Entware: opkg update && opkg install ca-certificates wget-ssl; либо 'opkg install curl')"
+    fi
+}
 
 # Detect whether /opt lives on a removable flash (USB/SD) or on the router's
 # internal memory (NAND/UBIFS/overlay). Internal -> soft disk mode (minimal writes).
@@ -72,16 +87,20 @@ while [ $# -gt 0 ]; do
         --prefix) PREFIX="$2"; shift ;;
         --disk-mode) DISK_MODE="$2"; shift ;;
         --deps) DEPS=1 ;;
+        --ipk) USE_IPK=1 ;;
         --with-xray-tproxy) XRAYTUN=1 ;;
         --yes|-y) YES=1 ;;
         --force) FORCE=1 ;;
         --no-start) NO_START=1 ;;
         -h|--help)
             echo "usage: $0 [--arch mipsel|mips|aarch64|armv7|x86_64] [--version latest|vX.Y.Z]"
-            echo "          [--egress IF] [--lan IF,IF] [--subnets CIDR,CIDR] [--prefix DIR]"
+            echo "          [--ipk] [--egress IF] [--lan IF,IF] [--subnets CIDR,CIDR] [--prefix DIR]"
             echo "          [--disk-mode normal|soft] [--deps] [--with-xray-tproxy]"
             echo "          [--yes] [--force] [--no-start]"
             echo
+            echo "  --ipk        ставить пакетом Entware (.ipk) из релиза вместо tar-архива:"
+            echo "               архитектура определяется сама, файл скачивается в /opt/tmp,"
+            echo "               затем выполняется opkg install (конфиг и списки сохраняются)."
             echo "  --disk-mode  normal (USB/SD) | soft (internal flash; no logs/state/backups)."
             echo "               Default: autodetect by /opt mount."
             echo "  --deps       доустановить недостающие пакеты через opkg без вопроса"
@@ -118,11 +137,11 @@ if [ -n "$need" ]; then
         case "$_ok" in y|Y|yes|YES) install_them=1 ;; esac
     fi
     if [ "$install_them" -eq 1 ]; then
-        say "opkg update && opkg install$need"
+        say "opkg update && opkg install $need"
         opkg update || true
         opkg install $need || true
     else
-        say "пропускаю. Установите вручную: opkg update && opkg install$need"
+        say "пропускаю. Установите вручную: opkg update && opkg install $need"
     fi
 fi
 
@@ -228,24 +247,83 @@ KMACH=$(uname -m 2>/dev/null || true)
 BBVER=$( (busybox 2>&1 || true) | sed -n '1s/.*BusyBox v\([0-9][^ ,)]*\).*/\1/p' )
 say "platform: arch=$ARCH ($ARCH_SRC), kernel=${KREL:-?} ($KMACH), busybox=${BBVER:-?}"
 
+# Откуда качать: GitHub Releases (по умолчанию) либо свой зеркальный каталог —
+# SUSANIN_BASE_URL (например, локальный сервер или собственный фид). С зеркалом
+# указывайте --version: имя .ipk/архива содержит версию.
+if [ "$VERSION" = latest ]; then
+    BASE="${SUSANIN_BASE_URL:-https://github.com/$REPO/releases/latest/download}"
+else
+    BASE="${SUSANIN_BASE_URL:-https://github.com/$REPO/releases/download/$VERSION}"
+fi
+
+# --- режим .ipk: ставим штатный пакет Entware из релиза -----------------------
+# Зачем: tar-архив раскладывает файлы «руками», а .ipk ставится обычным opkg —
+# появляется учёт пакета, `opkg remove` снимает службу/init/правила, а конфиг,
+# списки, состояние и профили при обновлении не перезаписываются.
+if [ "$USE_IPK" -eq 1 ]; then
+    command -v opkg >/dev/null 2>&1 \
+        || die "нет opkg — это не Entware? Установка без --ipk использует tar-архив"
+    case "$ARCH" in
+        mipsel)  OA=mipsel-3.4 ;;
+        mips)    OA=mips-3.4 ;;
+        aarch64) OA=aarch64-3.10 ;;
+        armv7)   OA=armv7sf-k3.2 ;;
+        x86_64)  OA=x86-64 ;;
+        *) die "для архитектуры '$ARCH' нет .ipk (есть: mipsel, mips, aarch64, armv7, x86_64)" ;;
+    esac
+    pick_fetch
+    if [ "$VERSION" = latest ]; then
+        # У последнего релиза имя ассета содержит версию — берём URL из API (без jq).
+        _api=$(mktemp 2>/dev/null) || _api=/tmp/susanin-api.$$
+        fetch "https://api.github.com/repos/$REPO/releases/latest" "$_api" \
+            || die "не удалось получить список ассетов последнего релиза (api.github.com)"
+        IPK_URL=$(sed -n 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)".*/\1/p' "$_api" \
+                  | grep -F "_${OA}.ipk" | head -n1 || true)
+        rm -f "$_api"
+        [ -n "$IPK_URL" ] || die "в последнем релизе нет .ipk для $OA"
+    else
+        IPK_URL="$BASE/susanin-keenetic_${VERSION#v}_${OA}.ipk"
+    fi
+    mkdir -p /opt/tmp
+    IPK_FILE="/opt/tmp/$(basename "$IPK_URL")"
+    say "ipk: $(basename "$IPK_URL") -> $IPK_FILE"
+    fetch "$IPK_URL" "$IPK_FILE" || die "не скачалось: $IPK_URL"
+    # Контрольная сумма: если SHA256SUMS есть в релизе и есть sha256sum — сверяем.
+    _sums=/opt/tmp/SHA256SUMS
+    if command -v sha256sum >/dev/null 2>&1 && fetch "$BASE/SHA256SUMS" "$_sums" 2>/dev/null; then
+        if grep -q " $(basename "$IPK_FILE")$" "$_sums" 2>/dev/null; then
+            if ( cd /opt/tmp && grep " $(basename "$IPK_FILE")$" "$_sums" > .ipk.sum \
+                 && sha256sum -c .ipk.sum >/dev/null 2>&1 ); then
+                say "SHA256: ok"
+            else
+                rm -f "$_sums" /opt/tmp/.ipk.sum
+                die "SHA256 не совпал — файл повреждён, скачайте заново"
+            fi
+            rm -f /opt/tmp/.ipk.sum
+        fi
+    fi
+    rm -f "$_sums"
+    if [ "$FORCE" -eq 1 ]; then
+        say "opkg install --force-reinstall $IPK_FILE"
+        opkg install --force-reinstall "$IPK_FILE" \
+            || die "opkg install не удался"
+    else
+        say "opkg install $IPK_FILE"
+        opkg install "$IPK_FILE" \
+            || die "opkg install не удался (если пакет уже стоит: добавьте --force)"
+    fi
+    say "готово. Проверка: susanin status && susanin diagnose"
+    say "конфиг: $PREFIX/etc/susanin.conf — проверьте egress_interface и lan_interfaces"
+    exit 0
+fi
+
 DIR0=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 if [ -f "$DIR0/susanin-agent" ] || [ -f "$DIR0/bin/susanin-agent" ] \
    || [ -n "$(ls "$DIR0"/susanin-agent.* "$DIR0"/bin/susanin-agent.* 2>/dev/null)" ]; then
     DIR=$DIR0
     say "local package: $DIR"
 else
-    if command -v curl >/dev/null 2>&1; then
-        fetch() { curl -fsSL "$1" -o "$2"; }
-    elif command -v wget >/dev/null 2>&1; then
-        fetch() { wget -qO "$2" "$1"; }
-    else
-        die "need curl or wget-ssl (Entware: opkg update && opkg install ca-certificates wget-ssl; либо 'opkg install curl')"
-    fi
-    if [ "$VERSION" = latest ]; then
-        BASE="https://github.com/$REPO/releases/latest/download"
-    else
-        BASE="https://github.com/$REPO/releases/download/$VERSION"
-    fi
+    pick_fetch
     ASSET="susanin-keenetic-deploy-$ARCH.tar.gz"
     say "arch=$ARCH version=$VERSION"
     TMP=$(mktemp -d /tmp/susanin-inst.XXXXXX)
@@ -375,40 +453,44 @@ if [ -z "$SUBNETS" ]; then
     done
 fi
 
-# OpenConnect (ocserv) server, if present, can be routed through Susanin.Keenetic too.
-oc_if=""
-for i in $(ifaces); do
-    case "$i" in oc[0-9]*) oc_if=$i ;; esac
-done
-if [ -z "$oc_if" ]; then
-    dev=$(sed -n 's/^device=//p' /var/run/ocserv/ocserv.conf 2>/dev/null | head -1)
-    if [ -n "$dev" ] && ifaces | grep -qx "${dev}0"; then
-        oc_if="${dev}0"
-    elif ps 2>/dev/null | grep -q '[o]cserv'; then
-        [ -n "$dev" ] && oc_if="${dev}0" || oc_if=oc0
-    fi
-fi
-if [ -n "$oc_if" ]; then
+# OpenConnect (ocserv): клиенты выходят через tun-интерфейсы oc0, oc1, … Один oc0
+# брать нельзя: tun создаётся по требованию и выпадает из lan_interfaces после
+# `rescan` с отключённым клиентом (регрессия 2026-10-14: «часть сайтов висит,
+# а status зелёный»). Поэтому — шаблон 'oc+' в КОНЕЦ списка.
+oc_srv=0
+[ -f /var/run/ocserv/ocserv.conf ] && oc_srv=1
+command -v iptables >/dev/null 2>&1 && iptables -t mangle -S _NDM_OCSRVVPN_MARK >/dev/null 2>&1 && oc_srv=1
+command -v ipset >/dev/null 2>&1 && ipset list -n _NDM_SRV_OCSRVVPN >/dev/null 2>&1 && oc_srv=1
+if [ "$oc_srv" = 1 ]; then
     case ",$LAN," in
-        *",$oc_if,"*) : ;;
+        *",oc+"*|*",oc0"*)
+            say "OpenConnect: клиенты уже в lan_interfaces" ;;
         *)
             add_oc=0
             if [ "$YES" -eq 1 ]; then
                 add_oc=1
             elif [ -r /dev/tty ]; then
-                printf "[susanin] OpenConnect server detected (%s). Add it to Susanin.Keenetic routing? [y/N]: " "$oc_if" >&2
+                printf "[susanin] OpenConnect server detected (oc+). Add clients to Susanin.Keenetic routing? [y/N]: " >&2
                 read _oc < /dev/tty || _oc=n
                 case "$_oc" in y|Y|yes|YES) add_oc=1 ;; esac
             fi
             if [ "$add_oc" -eq 1 ]; then
-                oc_addr=$(sed -n 's/^ipv4-network=//p' /var/run/ocserv/ocserv.conf 2>/dev/null | head -1)
-                [ -n "$oc_addr" ] || oc_addr=$(addr_of "$oc_if")
-                oc_net=$(printf '%s' "$oc_addr" | awk -F'[./]' '{print $1"."$2"."$3".0/24"}')
-                LAN="${LAN:+$LAN,}$oc_if"
-                SUBNETS="${SUBNETS:+$SUBNETS,}$oc_net"
-                say "OpenConnect added: iface=$oc_if subnet=$oc_net"
-            fi
-            ;;
+                oc_net=$(sed -n 's/^ipv4-network=//p' /var/run/ocserv/ocserv.conf 2>/dev/null | head -1)
+                if [ -z "$oc_net" ]; then
+                    for _i in $(ifaces); do
+                        case "$_i" in
+                            oc[0-9]*)
+                                _oc_addr=$(addr_of "$_i")
+                                [ -n "$_oc_addr" ] && oc_net=$(printf '%s' "$_oc_addr" | \
+                                    awk -F'[./]' '{print $1"."$2"."$3".0/24"}')
+                                break ;;
+                        esac
+                    done
+                fi
+                LAN="${LAN:+$LAN,}oc+"
+                [ -n "$oc_net" ] && SUBNETS="${SUBNETS:+$SUBNETS,}$oc_net"
+                say "OpenConnect added: iface=oc+ subnet=${oc_net:-n/a}"
+            fi ;;
     esac
 fi
 say "lan=$LAN subnets=${SUBNETS:-n/a}"
@@ -437,9 +519,30 @@ for f in datapath.sh susanin.sh update.sh uninstall.sh install.sh report.sh diag
 done
 chmod +x "$PREFIX/bin/susanin-agent" "$PREFIX/tools/"*.sh 2>/dev/null || true
 
-if [ ! -f "$PREFIX/etc/susanin.conf" ] || [ "$FORCE" = 1 ]; then
+# Объединить два списка через запятую без дублей (используется при --force,
+# чтобы не затереть уже заданные интерфейсы/подсети).
+merge_csv() {
+    printf '%s,%s\n' "$1" "$2" | tr ',' '\n' | sed 's/^[ \t]*//; s/[ \t]*$//' | \
+        grep -v '^$' | awk '!seen[$0]++' | awk 'NR==1{s=$0;next}{s=s","$0}END{print s}'
+}
+
+_cfg_val() { # значение ключа из уже установленного конфига
+    sed -n "s/^$1=[ \t]*//p" "$PREFIX/etc/susanin.conf" 2>/dev/null | head -1
+}
+
+if [ ! -f "$PREFIX/etc/susanin.conf" ]; then
     _cfg=$(find_file config.example.conf) || _cfg=""
     [ -n "$_cfg" ] && cp "$_cfg" "$PREFIX/etc/susanin.conf"
+    say "config created: $PREFIX/etc/susanin.conf"
+fi
+if [ ! -f "$PREFIX/etc/susanin.conf" ] || [ "$FORCE" = 1 ]; then
+    if [ "$FORCE" = 1 ]; then
+        # --force не затирает lan_*: объединяем автоопределённое с текущим.
+        _old_lan=$(_cfg_val lan_interfaces)
+        _old_sub=$(_cfg_val lan_subnets)
+        [ -n "$_old_lan" ] && LAN=$(merge_csv "$_old_lan" "$LAN")
+        [ -n "$_old_sub" ] && SUBNETS=$(merge_csv "$_old_sub" "$SUBNETS")
+    fi
     sed -i "s|^egress_interface=.*|egress_interface=$EGRESS|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
     sed -i "s|^lan_interfaces=.*|lan_interfaces=$LAN|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
     [ -n "$SUBNETS" ] && sed -i "s|^lan_subnets=.*|lan_subnets=$SUBNETS|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true

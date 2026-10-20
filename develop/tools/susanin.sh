@@ -6,6 +6,7 @@
 #   sh susanin.sh stop           # graceful stop (SIGTERM, then KILL if needed)
 #   sh susanin.sh restart        # restart
 #   sh susanin.sh status         # daemon + data plane state
+#   sh susanin.sh version        # точная версия сборки (susanin-agent version)
 #   sh susanin.sh log [N]        # last N log lines (default 30)
 #   sh susanin.sh install        # data plane setup (datapath up + setup)
 #   sh susanin.sh update [ver]   # update binary/scripts (keeps config and state)
@@ -247,6 +248,7 @@ case "${1:-}" in
     start) cmd_start ;;
     stop) cmd_stop ;;
     restart) cmd_restart ;;
+    version|-v|--version) "$BIN" version ;;
     web)
         case "${2:-status}" in
             start) cmd_web_start ;;
@@ -272,6 +274,6 @@ case "${1:-}" in
     profiles) SUSANIN_CONF="$CONF" sh "$TOOLS/profiles.sh" "${2:-status}" ;;
     xray) shift; SUSANIN_CONF="$CONF" sh "$TOOLS/xray-egress.sh" "$@" ;;
     *)
-        echo "usage: $0 {start|stop|restart|status|check|reload|rescan [--force]|web {start|stop|restart|status}|log [N]|diagnose [args]|report [args]|install|update [ver]|uninstall [--purge]|down|reset <ip|domain>|forget <ip|domain>|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>|profiles [up|down|status]|xray {run [ip]|stop|status|test <ip>|untest <ip>}}" >&2
+        echo "usage: $0 {start|stop|restart|status|version|check|reload|rescan [--force]|web {start|stop|restart|status}|log [N]|diagnose [args]|report [args]|install|update [ver]|uninstall [--purge]|down|reset <ip|domain>|forget <ip|domain>|add <ip> <tcp|udp> <test|ok>|del <ip> <tcp|udp>|profiles [up|down|status]|xray {run [ip]|stop|status|test <ip>|untest <ip>}}" >&2
         exit 2 ;;
 esac
