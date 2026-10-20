@@ -274,38 +274,40 @@ arch_norm() { # mipselsf-k3.4 -> mipsel, armv7sf-k2.6 -> armv7, aarch64-3.10 -> 
     esac
 }
 
-detect_arch() { # печатает нормализованную архитектуру или пусто
+detect_arch() { # печатает "arch|источник" (источник — для строки platform:)
     _ent=$(entware_arch)
     _n=$(arch_norm "$_ent")
     case "$_n" in
         mipsel|mips|aarch64|armv7|x86_64|mips64el)
-            ARCH_SRC="Entware ($_ent)"
-            printf '%s' "$_n"; return 0 ;;
+            printf '%s|Entware (%s)\n' "$_n" "$_ent"; return 0 ;;
     esac
     _m=$(uname -m 2>/dev/null | tr 'A-Z' 'a-z' || true)
     case "$_m" in
-        aarch64|arm64)      ARCH_SRC="uname -m ($_m)"; printf 'aarch64'; return 0 ;;
-        armv7l|armv7|armhf) ARCH_SRC="uname -m ($_m)"; printf 'armv7'; return 0 ;;
-        x86_64|amd64)       ARCH_SRC="uname -m ($_m)"; printf 'x86_64'; return 0 ;;
+        aarch64|arm64)      printf 'aarch64|uname -m (%s)\n' "$_m"; return 0 ;;
+        armv7l|armv7|armhf) printf 'armv7|uname -m (%s)\n' "$_m"; return 0 ;;
+        x86_64|amd64)       printf 'x86_64|uname -m (%s)\n' "$_m"; return 0 ;;
         mips|mipsel|mips64)
             _e=$(probe_endian || true)
             case "$_e" in
-                little) ARCH_SRC="uname -m ($_m) + ELF-endianness ($_e)"; printf 'mipsel'; return 0 ;;
-                big)    ARCH_SRC="uname -m ($_m) + ELF-endianness ($_e)"; printf 'mips'; return 0 ;;
+                little) printf 'mipsel|uname -m (%s) + ELF-endianness (%s)\n' "$_m" "$_e"; return 0 ;;
+                big)    printf 'mips|uname -m (%s) + ELF-endianness (%s)\n' "$_m" "$_e"; return 0 ;;
             esac
             # Endianness определить не удалось: на Keenetic+Entware это почти всегда mipsel.
-            ARCH_SRC="предположение для MIPS (endianness не определён)"
-            printf 'mipsel'; return 0 ;;
+            printf 'mipsel|предположение для MIPS (endianness не определён)\n'; return 0 ;;
     esac
     return 1
 }
 
 if [ -z "$ARCH" ]; then
-    ARCH=$(detect_arch || true)
-    if [ -z "$ARCH" ]; then
+    # detect_arch вызывается в подоболочке — источник возвращаем в самом выводе,
+    # иначе в логе получалось «arch=mipsel ()».
+    _det=$(detect_arch || true)
+    if [ -z "$_det" ]; then
         _m=$(uname -m 2>/dev/null || echo unknown)
         die "cannot detect arch (uname -m=$_m); pass --arch mipsel|mips|aarch64|armv7|x86_64"
     fi
+    ARCH=${_det%%|*}
+    ARCH_SRC=${_det#*|}
 else
     ARCH_SRC="--arch"
 fi
@@ -347,7 +349,12 @@ if [ "$USE_IPK" -eq 1 ]; then
         IPK_URL=$(sed -n 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)".*/\1/p' "$_api" \
                   | grep -F "_${OA}.ipk" | head -n1 || true)
         rm -f "$_api"
-        [ -n "$IPK_URL" ] || die "в последнем релизе нет .ipk для $OA"
+        [ -n "$IPK_URL" ] || die "в последнем релизе нет .ipk для $OA
+     похоже, релиз с пакетами ещё не опубликован (или у последнего релиза нет ассетов).
+     что делать:
+       * без --ipk — поставить tar-архивом:  sh install.sh --yes
+       * если релиз уже есть, указать версию: sh install.sh --ipk --version vX.Y.Z
+       * или скачать .ipk вручную и поставить: opkg install <файл>.ipk"
     else
         IPK_URL="$BASE/susanin-keenetic_${VERSION#v}_${OA}.ipk"
     fi
