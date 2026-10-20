@@ -204,12 +204,21 @@ Susanin.Keenetic может выносить помеченный трафик �
 - **UDP:** релей в самом демоне (`TPROXY` приём + SOCKS5 `UDP ASSOCIATE` к
   локальному Xray `socks`, `udp:true`).
 
-Требуется бинарь Xray и конфиг клиента (Xray в архив не входит):
+Требуется бинарь Xray и конфиг клиента (Xray в поставку не входит —
+скачивается отдельно, ~29 МБ):
 ```sh
-sh bootstrap.sh --with-xray --yes    # Xray 1.8.24 -> /opt/sbin/xray
-# вручную: develop/xray/xray.<arch> -> /opt/sbin/xray, chmod +x, sha256 по xray/SHA256SUMS
+# 1) вместе с установкой: любой способ, флаг --with-xray(-tproxy)
+sh bootstrap.sh --with-xray --yes                       # tar-архив
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
+  | sh -s -- --ipk --with-xray-tproxy                    # пакет .ipk
+# 2) вручную: develop/xray/xray.<arch> -> /opt/sbin/xray, chmod +x,
+#    sha256 сверить с xray/SHA256SUMS
 cp /opt/susanin/etc/xray-tproxy.json.example /opt/susanin/etc/xray-tproxy.json
 ```
+В `.ipk` есть `xray-egress.sh`, init-скрипт `S93xray-tproxy` и шаблон
+`share/xray-tproxy.json.example`; самого бинаря Xray в пакете нет (он большой и
+нужен только для этого режима) — установщик скачивает его из репозитория и
+проверяет SHA256; сеть недоступна — подскажет, куда положить файл вручную.
 Включение/выключение боевого режима (ключи `egress_type=tproxy`, `udp_relay=1`
 и т.д. выставляются автоматически):
 ```sh
@@ -405,9 +414,17 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.s
 сверяет SHA256 по `SHA256SUMS` из релиза и выполняет `opkg install`.
 Полезные флаги: `--version v0.4.0.RC1` (конкретная версия), `--force`
 (переустановить поверх: `opkg install --force-reinstall`), `--yes` (без вопросов),
-`--arch mipsel|mips|aarch64|armv7|x86_64` (если автоопределение не сработало).
+`--arch mipsel|mips|aarch64|armv7|x86_64` (если автоопределение не сработало),
+`--with-xray-tproxy` (режим VLESS/REALITY: скачает Xray в `/opt/sbin/xray`,
+сверит SHA256 и положит шаблон tproxy-конфига — см. «XRay как egress»).
 Если `curl` уже стоит, вместо `wget -qO- … | sh` можно использовать
-`curl -fsSL … | sh -s -- --ipk`.
+`curl -fsSL … | sh -s -- --ipk`:
+
+```sh
+# VLESS/REALITY пакетом: Xray скачивается отдельно (в .ipk его нет)
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
+  | sh -s -- --ipk --with-xray-tproxy
+```
 
 **Способ 2 — вручную**, если нужен контроль над файлом. Сначала посмотрите
 архитектуру Entware:

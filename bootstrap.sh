@@ -96,6 +96,8 @@ usage() {
                          поставить в /opt/sbin/xray: в архив он не входит.
                          Дополнительно передаёт install.sh --with-xray-tproxy,
                          чтобы положить шаблон tproxy-конфига.
+  --ipk                  ставить пакетом Entware (.ipk) вместо tar-архива;
+                         работает вместе с --with-xray.
   --allow-full-unpack    разрешить полную распаковку архива, если выборочная
                          невозможна. ВНИМАНИЕ: пишет на носитель ~5 МБ вместо
                          ~1,5 МБ; по умолчанию выключено (нужен один бинарник).
@@ -139,6 +141,7 @@ while [ $# -gt 0 ]; do
         --arch) need_val $# "$1"; ARCH="$2"; INSTALL_ARGS="$INSTALL_ARGS --arch $2"; shift ;;
         --tmp) need_val $# "$1"; TMP_OVERRIDE="$2"; shift ;;
         --with-xray) WITH_XRAY=1; INSTALL_ARGS="$INSTALL_ARGS --with-xray-tproxy" ;;
+        --ipk) INSTALL_ARGS="$INSTALL_ARGS --ipk" ;;
         --allow-full-unpack|--full-unpack) FULL_UNPACK=1 ;;
         --check|--print-platform) CHECKONLY=1 ;;
         --dry-run) DRYRUN=1 ;;

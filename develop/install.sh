@@ -45,6 +45,73 @@ pick_fetch() {
     fi
 }
 
+# --- VLESS/REALITY: Xray + шаблон tproxy-конфига ------------------------------
+# Вызывается по --with-xray-tproxy (или bootstrap --with-xray) в ЛЮБОМ режиме
+# установки (tar-архив и .ipk). Бинарников Xray нет в поставке, поэтому при
+# отсутствии /opt/sbin/xray скачиваем нужный из репозитория (develop/xray/) и
+# сверяем sha256 по xray/SHA256SUMS. Если сети нет — просто подсказываем.
+xray_setup() {
+    [ "$XRAYTUN" -eq 1 ] || return 0
+    say "XRay-egress (tproxy): проверяю инструменты ..."
+    if [ -x /opt/sbin/xray ]; then
+        say "xray: есть (/opt/sbin/xray)"
+    else
+        case "$ARCH" in
+            mipsel|mips) _xa=mipsel ;;
+            aarch64)     _xa=aarch64 ;;
+            *)           _xa="" ;;
+        esac
+        if [ -z "$_xa" ]; then
+            say "xray: для arch=$ARCH готового бинарника в репозитории нет (есть mipsel и aarch64) — положите рабочий Xray в /opt/sbin/xray и chmod +x"
+        else
+            pick_fetch
+            mkdir -p /opt/sbin /opt/tmp 2>/dev/null || true
+            _xbase="https://raw.githubusercontent.com/$REPO/develop/develop/xray"
+            _xfile="/opt/tmp/xray.$_xa"
+            say "скачиваю Xray ($_xa): $_xbase/xray.$_xa"
+            if fetch "$_xbase/xray.$_xa" "$_xfile"; then
+                if fetch "$_xbase/SHA256SUMS" /opt/tmp/xray.SHA256SUMS 2>/dev/null && \
+                   command -v sha256sum >/dev/null 2>&1; then
+                    _want=$(awk -v f="xray.$_xa" '$2==f {print $1; exit}' /opt/tmp/xray.SHA256SUMS 2>/dev/null || true)
+                    _got=$(sha256sum "$_xfile" | awk '{print $1}' || true)
+                    if [ -n "$_want" ] && [ "$_want" != "$_got" ]; then
+                        rm -f "$_xfile" /opt/tmp/xray.SHA256SUMS
+                        say "xray: SHA256 НЕ совпал — скачивание отменено, поставьте Xray вручную"
+                        _xfile=""
+                    else
+                        [ -n "$_want" ] && say "xray: SHA256 OK"
+                    fi
+                fi
+                if [ -n "${_xfile:-}" ] && [ -f "$_xfile" ]; then
+                    if cp "$_xfile" /opt/sbin/xray && chmod +x /opt/sbin/xray; then
+                        say "xray установлен: /opt/sbin/xray"
+                    else
+                        say "xray: не удалось положить в /opt/sbin/xray (файл: $_xfile)"
+                    fi
+                    rm -f "$_xfile"
+                fi
+            elif [ ! -x "$PREFIX/bin/xray" ]; then
+                say "xray: скачать не удалось — положите рабочий Xray в /opt/sbin/xray и chmod +x"
+            fi
+        fi
+    fi
+    # Шаблон конфига: ищем и в пакете (.ipk: share/), и в распакованном архиве.
+    _xtp=""
+    for _c in "$PREFIX/share/xray-tproxy.json.example" \
+              "${DIR:-}/xray-tproxy.json.example" \
+              "${DIR:-}/xray/xray-tproxy.json.example" \
+              "${DIR0:-}/xray-tproxy.json.example"; do
+        [ -n "$_c" ] && [ -f "$_c" ] && { _xtp="$_c"; break; }
+    done
+    if [ -n "$_xtp" ]; then
+        mkdir -p "$PREFIX/etc" 2>/dev/null || true
+        cp "$_xtp" "$PREFIX/etc/xray-tproxy.json.example" 2>/dev/null || true
+        say "шаблон: $PREFIX/etc/xray-tproxy.json.example (подставьте SERVER/UUID/SNI/PBK/SID)"
+    fi
+    say "в susanin.conf: egress_type=tproxy, tproxy_port=12345"
+    say "включить/проверить: sh $PREFIX/tools/xray-egress.sh enable | status | test <ip>"
+}
+
 # Detect whether /opt lives on a removable flash (USB/SD) or on the router's
 # internal memory (NAND/UBIFS/overlay). Internal -> soft disk mode (minimal writes).
 detect_disk_mode() {
@@ -314,6 +381,9 @@ if [ "$USE_IPK" -eq 1 ]; then
     fi
     say "готово. Проверка: susanin status && susanin diagnose"
     say "конфиг: $PREFIX/etc/susanin.conf — проверьте egress_interface и lan_interfaces"
+    # VLESS/REALITY по желанию: --with-xray-tproxy (Xray скачивается отдельно,
+    # в пакет не входит).
+    xray_setup
     exit 0
 fi
 
@@ -809,26 +879,6 @@ if [ "$NO_START" -ne 1 ]; then
 fi
 say "installed to $PREFIX (run: sh $PREFIX/tools/susanin.sh status)"
 
-# XRay-egress (tproxy): проверяет Xray и кладёт шаблон tproxy-конфига.
-if [ "$XRAYTUN" -eq 1 ]; then
-    say "XRay-egress (tproxy): проверяю инструменты ..."
-    if [ -x /opt/sbin/xray ]; then
-        say "xray: есть (/opt/sbin/xray)"
-    else
-        say "xray: НЕТ — положите рабочий бинарь Xray (напр. 1.8.24 softfloat) в /opt/sbin/xray и chmod +x"
-    fi
-    _xtp=$(find_file xray-tproxy.json.example) || _xtp=""
-    if [ -n "$_xtp" ]; then
-        cp "$_xtp" "$PREFIX/etc/xray-tproxy.json.example"
-    fi
-    # Бинарь Xray из комплекта (xray/xray.<arch>), если ещё не установлен.
-    XB="$DIR/xray/xray.$ARCH"
-    if [ -x "$XB" ] && [ ! -x /opt/sbin/xray ]; then
-        cp "$XB" /opt/sbin/xray && chmod +x /opt/sbin/xray \
-            && say "xray установлен из комплекта: /opt/sbin/xray"
-    elif [ -x "$XB" ]; then
-        say "xray уже есть (/opt/sbin/xray) — из комплекта не ставлю"
-    fi
-    say "шаблон: $PREFIX/etc/xray-tproxy.json.example (подставьте SERVER/UUID/SNI/PBK/SID)"
-    say "в susanin.conf: egress_type=tproxy, tproxy_port=12345"
-fi
+# XRay-egress (tproxy): скачать Xray (если нет), положить шаблон конфига и
+# подсказать ключи. Одна и та же логика для tar-архива и .ipk.
+xray_setup

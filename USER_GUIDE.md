@@ -190,9 +190,17 @@ CIDR; `#` — комментарий). Адрес обрабатывается �
 **XRay/REALITY как egress (режим `tproxy`).** Рекомендуемый способ (без TUN):
 в `susanin.conf` — `egress_type=tproxy`, `tproxy_port=12345`; при желании UDP —
 `udp_relay=1`, `udp_relay_port=1081`, `socks_addr=127.0.0.1`, `socks_port=1080`.
-Проще всего — `sh /opt/susanin/tools/xray-egress.sh enable` (сам выставит ключи,
-поднимет Xray и перезапустит агента). Откат — `disable`. Подробности, проверка
-TCP/UDP и грабли — [XRAY.md](XRAY.md).
+Сам бинарь Xray в поставку не входит — его скачивает установщик:
+```sh
+sh bootstrap.sh --with-xray --yes                    # tar-архив
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
+  | sh -s -- --ipk --with-xray-tproxy                 # пакет .ipk
+```
+(Xray ставится в `/opt/sbin/xray`, SHA256 сверяется; конфиг-шаблон —
+`/opt/susanin/etc/xray-tproxy.json.example`.)
+Проще всего включить — `sh /opt/susanin/tools/xray-egress.sh enable` (сам выставит
+ключи, поднимет Xray и перезапустит агента). Откат — `disable`. Подробности,
+проверка TCP/UDP и грабли — [XRAY.md](XRAY.md).
 
 **Резервный путь через Xray (кандидат `tproxy`).** С 0.4.0.RC1 в
 `egress_interface` можно указать `tproxy` (синоним `xray`) вместе с обычными

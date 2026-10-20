@@ -74,6 +74,10 @@
   апстрима Xray, при переключении на него датаплейн пересобирается в
   tproxy-режиме (`down` + `up`), при возврате — обратно. Fail-safe: если Xray не
   слушает `tproxy_port`, режим не меняется.
+- **VLESS/REALITY работает в обоих режимах установки:** `--with-xray` (bootstrap,
+  tar-архив) и `--with-xray-tproxy` (`.ipk`) скачивают Xray-core в `/opt/sbin/xray`
+  (в поставку бинарник не входит), сверяют SHA256 по `xray/SHA256SUMS` и кладут
+  шаблон `xray-tproxy.json.example`; `bootstrap.sh --ipk` тоже понимает.
 - **`.ipk`-пакеты для Entware:** `tools/make-ipk.sh` + `opkg/` (control,
   postinst/prerm/postrm). Ставится как
   `opkg install susanin-keenetic_<ver>_<arch>.ipk`; конфиг, списки и состояние
