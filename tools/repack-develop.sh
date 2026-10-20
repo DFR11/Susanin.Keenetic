@@ -51,8 +51,10 @@ fi
 
 cd "$DEV"
 LIST=$(mktemp 2>/dev/null || echo "/tmp/susanin-devlist.$$")
+# ipk/ — «рабочая» публикация пакетов в ветке (её скачивает install.sh --ipk);
+# в dev-архив её не кладём: он и так 2.5 МБ, а пакеты качаются по отдельности.
 find . -type f ! -name SHA256SUMS ! -name "$PKG.tar.gz" ! -path "./xray/xray.*" \
-    -print | sed 's|^\./||' | sort > "$LIST"
+    ! -path "./ipk/*" -print | sed 's|^\./||' | sort > "$LIST"
 
 # 3) SHA256SUMS (пути — относительно корня пакета, как ждёт bootstrap.sh).
 : > SHA256SUMS

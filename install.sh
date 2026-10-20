@@ -30,6 +30,7 @@ DISK_MODE=""
 DEPS=0
 XRAYTUN=0
 USE_IPK=0
+IPK_LOCAL=""     # --ipk-file: уже скачанный .ipk на устройстве (без релиза)
 
 say() { echo "[susanin] $*"; }
 die() { echo "[susanin] ERROR: $*" >&2; exit 1; }
@@ -155,6 +156,8 @@ while [ $# -gt 0 ]; do
         --disk-mode) DISK_MODE="$2"; shift ;;
         --deps) DEPS=1 ;;
         --ipk) USE_IPK=1 ;;
+        # Локальный .ipk (без релиза/интернета): --ipk-file /opt/tmp/x.ipk
+        --ipk-file) IPK_LOCAL="$2"; USE_IPK=1; shift ;;
         --with-xray-tproxy) XRAYTUN=1 ;;
         --yes|-y) YES=1 ;;
         --force) FORCE=1 ;;
@@ -168,6 +171,8 @@ while [ $# -gt 0 ]; do
             echo "  --ipk        ставить пакетом Entware (.ipk) из релиза вместо tar-архива:"
             echo "               архитектура определяется сама, файл скачивается в /opt/tmp,"
             echo "               затем выполняется opkg install (конфиг и списки сохраняются)."
+            echo "  --ipk-file F ставить уже скачанный .ipk с устройства (без релиза/интернета):"
+            echo "               sh install.sh --ipk-file /opt/tmp/susanin-keenetic_*.ipk --yes"
             echo "  --disk-mode  normal (USB/SD) | soft (internal flash; no logs/state/backups)."
             echo "               Default: autodetect by /opt mount."
             echo "  --deps       доустановить недостающие пакеты через opkg без вопроса"
@@ -341,42 +346,81 @@ if [ "$USE_IPK" -eq 1 ]; then
         *) die "для архитектуры '$ARCH' нет .ipk (есть: mipsel, mips, aarch64, armv7, x86_64)" ;;
     esac
     pick_fetch
-    if [ "$VERSION" = latest ]; then
-        # У последнего релиза имя ассета содержит версию — берём URL из API (без jq).
-        _api=$(mktemp 2>/dev/null) || _api=/tmp/susanin-api.$$
-        fetch "https://api.github.com/repos/$REPO/releases/latest" "$_api" \
-            || die "не удалось получить список ассетов последнего релиза (api.github.com)"
-        IPK_URL=$(sed -n 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)".*/\1/p' "$_api" \
-                  | grep -F "_${OA}.ipk" | head -n1 || true)
-        rm -f "$_api"
-        [ -n "$IPK_URL" ] || die "в последнем релизе нет .ipk для $OA
-     похоже, релиз с пакетами ещё не опубликован (или у последнего релиза нет ассетов).
-     что делать:
-       * без --ipk — поставить tar-архивом:  sh install.sh --yes
-       * если релиз уже есть, указать версию: sh install.sh --ipk --version vX.Y.Z
-       * или скачать .ipk вручную и поставить: opkg install <файл>.ipk"
+    if [ -n "$IPK_LOCAL" ]; then
+        # Файл уже на устройстве: ни релиз, ни интернет не нужны.
+        [ -f "$IPK_LOCAL" ] || die "нет файла: $IPK_LOCAL (--ipk-file)"
+        IPK_FILE="$IPK_LOCAL"
+        _sums_dir=$(dirname "$IPK_FILE")
+        say "ipk (локальный файл): $IPK_FILE"
     else
-        IPK_URL="$BASE/susanin-keenetic_${VERSION#v}_${OA}.ipk"
-    fi
-    mkdir -p /opt/tmp
-    IPK_FILE="/opt/tmp/$(basename "$IPK_URL")"
-    say "ipk: $(basename "$IPK_URL") -> $IPK_FILE"
-    fetch "$IPK_URL" "$IPK_FILE" || die "не скачалось: $IPK_URL"
-    # Контрольная сумма: если SHA256SUMS есть в релизе и есть sha256sum — сверяем.
-    _sums=/opt/tmp/SHA256SUMS
-    if command -v sha256sum >/dev/null 2>&1 && fetch "$BASE/SHA256SUMS" "$_sums" 2>/dev/null; then
-        if grep -q " $(basename "$IPK_FILE")$" "$_sums" 2>/dev/null; then
-            if ( cd /opt/tmp && grep " $(basename "$IPK_FILE")$" "$_sums" > .ipk.sum \
-                 && sha256sum -c .ipk.sum >/dev/null 2>&1 ); then
-                say "SHA256: ok"
-            else
-                rm -f "$_sums" /opt/tmp/.ipk.sum
-                die "SHA256 не совпал — файл повреждён, скачайте заново"
+        mkdir -p /opt/tmp
+        _sums_dir=/opt/tmp
+        _url=""
+        IPK_FILE=""
+        # (1) Релиз GitHub. Для latest имя ассета содержит версию — берём URL из
+        # API (без jq); для явной версии URL собираем сами.
+        if [ "$VERSION" = latest ]; then
+            _api=$(mktemp 2>/dev/null) || _api=/tmp/susanin-api.$$
+            if fetch "https://api.github.com/repos/$REPO/releases/latest" "$_api" 2>/dev/null; then
+                _url=$(sed -n 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)".*/\1/p' "$_api" \
+                       | grep -F "_${OA}.ipk" | head -n1 || true)
             fi
-            rm -f /opt/tmp/.ipk.sum
+            rm -f "$_api"
+        else
+            _url="$BASE/susanin-keenetic_${VERSION#v}_${OA}.ipk"
+        fi
+        if [ -n "$_url" ]; then
+            say "ipk (релиз): $(basename "$_url")"
+            if fetch "$_url" "/opt/tmp/$(basename "$_url")" 2>/dev/null; then
+                IPK_FILE="/opt/tmp/$(basename "$_url")"
+                fetch "$BASE/SHA256SUMS" "$_sums_dir/SHA256SUMS" 2>/dev/null || true
+            else
+                rm -f "/opt/tmp/$(basename "$_url")"
+                [ "$VERSION" != latest ] && say "в релизе $VERSION нет пакета для $OA"
+            fi
+        fi
+        # (2) Репозиторий: develop/ipk/ (как bootstrap.sh — работает БЕЗ релиза).
+        if [ -z "$IPK_FILE" ]; then
+            _rb="${SUSANIN_IPK_REPO:-https://raw.githubusercontent.com/$REPO/${SUSANIN_BRANCH:-develop}/develop/ipk}"
+            say "в релизе нет .ipk — беру из репозитория: $_rb/"
+            if fetch "$_rb/SHA256SUMS" "$_sums_dir/SHA256SUMS" 2>/dev/null; then
+                _name=$(awk -v a="_${OA}.ipk" 'index($2,a)>0 {print $2; exit}' "$_sums_dir/SHA256SUMS" \
+                        | sed 's|.*/||')
+                if [ -n "$_name" ] && [ "$VERSION" != latest ]; then
+                    case "$_name" in
+                        *"${VERSION#v}"*) ;;
+                        *) _name="" ;;
+                    esac
+                fi
+                if [ -n "$_name" ]; then
+                    say "ipk (репозиторий): $_name"
+                    fetch "$_rb/$_name" "/opt/tmp/$_name" && IPK_FILE="/opt/tmp/$_name"
+                fi
+            fi
+        fi
+        if [ -z "$IPK_FILE" ]; then
+            rm -f "$_sums_dir/SHA256SUMS"
+            die "нет .ipk для $OA ни в релизе, ни в репозитории (develop/ipk)
+     что делать:
+       * поставить tar-архивом:               sh install.sh --yes
+       * поставить свой файл:                 sh install.sh --ipk-file /opt/tmp/<файл>.ipk
+       * если релиз уже есть:                 sh install.sh --ipk --version vX.Y.Z"
         fi
     fi
-    rm -f "$_sums"
+    # Контрольная сумма: если рядом с файлом есть SHA256SUMS — сверяем.
+    _sums="$_sums_dir/SHA256SUMS"
+    if command -v sha256sum >/dev/null 2>&1 && [ -f "$_sums" ] && \
+       grep -q " $(basename "$IPK_FILE")$" "$_sums" 2>/dev/null; then
+        if ( cd "$_sums_dir" && grep " $(basename "$IPK_FILE")$" "$_sums" > .ipk.sum \
+             && sha256sum -c .ipk.sum >/dev/null 2>&1 ); then
+            say "SHA256: ok"
+        else
+            rm -f "$_sums_dir/.ipk.sum"
+            die "SHA256 не совпал — файл повреждён, скачайте заново"
+        fi
+        rm -f "$_sums_dir/.ipk.sum"
+    fi
+    [ -n "$IPK_LOCAL" ] || rm -f "$_sums"
     if [ "$FORCE" -eq 1 ]; then
         say "opkg install --force-reinstall $IPK_FILE"
         opkg install --force-reinstall "$IPK_FILE" \

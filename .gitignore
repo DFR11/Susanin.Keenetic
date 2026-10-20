@@ -19,6 +19,11 @@ susanin-agent
 *.ipk
 /dist/
 /dist-ipk/
+# Исключение: develop/ipk/ — «рабочая» публикация пакетов в ветке, чтобы
+# install.sh --ipk ставил пакет без релиза (как bootstrap.sh берёт dev-архив).
+!/develop/ipk/
+!/develop/ipk/*.ipk
+!/develop/ipk/SHA256SUMS
 # develop/bin — копия build/ для dev-архива; в git не дублируем (пересобирает
 # tools/repack-develop.sh из build/, который в git есть)
 /develop/bin/
