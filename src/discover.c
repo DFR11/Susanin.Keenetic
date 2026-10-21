@@ -333,9 +333,20 @@ int discover_defaults(susanin_discovery *d, const susanin_config *c)
         goto egress_addr;
     }
 
-    /* Egress: список фейловера оставляем, если жив хотя бы один кандидат. */
+    /* Egress: список фейловера оставляем, если жив хотя бы один кандидат, но
+     * ДОБИРАЕМ живые VPN-интерфейсы, которых в списке ещё нет: второй туннель
+     * может подняться позже (или быть включён после установки), и rescan должен
+     * его увидеть — раньше список не менялся, пока в нём был хоть один живой. */
     if (c->egress_interface[0] && egress_any_alive(c)) {
         snprintf(d->egress_interface, sizeof(d->egress_interface), "%s", c->egress_interface);
+        for (i = 0; i < nup; i++) {
+            if (!is_egress_name(up[i]) || iface_excluded(c, up[i]))
+                continue;
+            if (csv_has(d->egress_interface, up[i]))
+                continue;
+            append_csv(d->egress_interface, sizeof(d->egress_interface), up[i]);
+            slogf(SL_INFO, "discover: egress += %s (новый живой туннель)", up[i]);
+        }
     } else {
         for (i = 0; i < nup; i++) {
             if (!is_egress_name(up[i]) || iface_excluded(c, up[i]))
@@ -368,10 +379,33 @@ int discover_defaults(susanin_discovery *d, const susanin_config *c)
     }
 
 egress_addr:
-    /* Адрес выбранного egress. */
-    if (iface_addr4(d->egress_interface, d->egress_address, sizeof(d->egress_address)) != 0)
-        snprintf(d->egress_address, sizeof(d->egress_address), "%s",
-                 c->egress_address[0] ? c->egress_address : "");
+    /* Адреса egress — по индексу: для списка «nwg1,nwg0» собираем
+     * «10.8.1.2,10.200.0.2», иначе health-проба второго туннеля шла бы без
+     * своего source-адреса. Если у интерфейса адреса нет — берём из конфига. */
+    {
+        char list[256], addrs[256], buf[256], *save = NULL, *tok;
+        size_t used = 0;
+        list[0] = '\0';
+        snprintf(buf, sizeof(buf), "%s", d->egress_interface);
+        for (tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+            int n;
+            while (*tok == ' ')
+                tok++;
+            if (!*tok || used + 2 >= sizeof(list))
+                continue;
+            if (iface_addr4(tok, addrs, sizeof(addrs)) != 0)
+                continue;
+            n = snprintf(list + used, sizeof(list) - used, "%s%s",
+                         used ? "," : "", addrs);
+            if (n > 0 && (size_t)n < sizeof(list) - used)
+                used += (size_t)n;
+        }
+        if (list[0])
+            snprintf(d->egress_address, sizeof(d->egress_address), "%s", list);
+        else
+            snprintf(d->egress_address, sizeof(d->egress_address), "%s",
+                     c->egress_address[0] ? c->egress_address : "");
+    }
     return 0;
 }
 

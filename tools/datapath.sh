@@ -228,6 +228,13 @@ rule_priv() {
 
 rule_mark() {
     for i in $LAN; do
+        # Клиенты OpenConnect (oc0, oc1… или шаблон oc+) приходят с меткой
+        # Keenetic (0xffffaXX). Она пересекается с нашей маской, поэтому
+        # правило «-m mark 0x0/MASK» для них не срабатывало и трафик уходил по
+        # политике NDM вместо VPN. Для oc* выставляем наш CONNMARK без этой
+        # предусловицы; restore-mark дальше аккуратно заменит только наши биты.
+        _ocm=0
+        case "$i" in oc*) _ocm=1 ;; esac
         # N2: ok_net -> kernel-offload (отдельная метка + ACCEPT, чтобы не уйти
         # в tproxy REDIRECT и не получить MARK_OK).
         if [ "$KERNEL_OFFLOAD" = "1" ] && [ -n "$KERNEL_EGRESS" ]; then
@@ -258,18 +265,32 @@ rule_mark() {
             _ms=dst
         fi
         for p in tcp udp; do
-            mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
-                -m mark --mark "0x0/$MARK_MASK" \
-                -m set --match-set susanin_ok_${p} $_ms \
-                -j CONNMARK --set-xmark "$MARK_OK/$MARK_MASK"
-            mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
-                -m mark --mark "0x0/$MARK_MASK" \
-                -m set --match-set susanin_ok_net dst \
-                -j CONNMARK --set-xmark "$MARK_OK/$MARK_MASK"
-            mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
-                -m mark --mark "0x0/$MARK_MASK" \
-                -m set --match-set susanin_test_${p} $_ms \
-                -j CONNMARK --set-xmark "$MARK_TEST/$MARK_MASK"
+            if [ "$_ocm" = "1" ]; then
+                # oc*: без предусловицы по skb-метке (у клиентов уже стоит
+                # метка Keenetic 0xffffaXX, см. комментарий выше).
+                mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
+                    -m set --match-set susanin_ok_${p} $_ms \
+                    -j CONNMARK --set-xmark "$MARK_OK/$MARK_MASK"
+                mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
+                    -m set --match-set susanin_ok_net dst \
+                    -j CONNMARK --set-xmark "$MARK_OK/$MARK_MASK"
+                mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
+                    -m set --match-set susanin_test_${p} $_ms \
+                    -j CONNMARK --set-xmark "$MARK_TEST/$MARK_MASK"
+            else
+                mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
+                    -m mark --mark "0x0/$MARK_MASK" \
+                    -m set --match-set susanin_ok_${p} $_ms \
+                    -j CONNMARK --set-xmark "$MARK_OK/$MARK_MASK"
+                mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
+                    -m mark --mark "0x0/$MARK_MASK" \
+                    -m set --match-set susanin_ok_net dst \
+                    -j CONNMARK --set-xmark "$MARK_OK/$MARK_MASK"
+                mangle "$CHAIN" -i "$i" -p "$p" -m conntrack --ctstate NEW \
+                    -m mark --mark "0x0/$MARK_MASK" \
+                    -m set --match-set susanin_test_${p} $_ms \
+                    -j CONNMARK --set-xmark "$MARK_TEST/$MARK_MASK"
+            fi
         done
         mangle "$CHAIN" -i "$i" -j CONNMARK --restore-mark --nfmask "$MARK_MASK" --ctmask "$MARK_MASK"
         mangle "$CHAIN" -i "$i" -m mark --mark "$MARK_OK/$MARK_MASK" \

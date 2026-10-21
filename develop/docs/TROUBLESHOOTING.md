@@ -266,8 +266,22 @@ sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
 sed -i 's|^lan_interfaces=.*|lan_interfaces=br0,br1,oc+|' /opt/susanin/etc/susanin.conf
 sh /opt/susanin/tools/susanin.sh restart
 ```
-С 0.4.0.RC1.Hotfix `discover`/`rescan` держат `oc+` и подсеть пула сами, пока жив
-OpenConnect-сервер, а `diagnose.sh` предупреждает, если этого нет.
+С 0.4.0.RC1.Hotfix `discover`/`rescan` больше **не добавляют** `oc+` сами (сервер
+есть не у всех) — нужен явный `--with-oc` при установке или строка в конфиге, как
+выше. Зато если `oc+` указан, подсеть пула поддерживается автоматически.
+
+Отдельный случай (тоже исправлен в Hotfix): Keenetic помечает трафик oc-клиентов
+своей меткой `0xffffaXX`, и она пересекается с нашей маской `0x30000000`. Из-за
+этого правило «`-m mark 0x0/0x30000000`» не срабатывало, CONNMARK не ставился и
+трафик уходил по политике NDM, а не в VPN. Теперь для `oc*` метки ставятся без
+этой предусловицы. На старых сборках проверка выглядела так:
+
+```sh
+iptables -t mangle -S SUSANIN | grep 'oc+' | head          # видно ли наши CONNMARK-правила
+conntrack -L 2>/dev/null | grep 172.16.5 | head -3         # mark=0xffffaXX = не обработан
+```
+Если у клиентов `mark=0xffffaXX` — обновитесь до Hotfix или поставьте
+`lan_interfaces` с `oc+` и перезапустите службу.
 
 Проверка, что клиент обрабатывается:
 ```sh
@@ -291,6 +305,12 @@ grep 172.16.5 /proc/net/nf_conntrack | head -3     # mark=0x20000000/0x10000000
   `susanin-agent config set web_token <секрет> && susanin restart`, затем
   открывайте один раз с `?token=<секрет>` — дальше токен хранится в браузере и
   уходит заголовком `X-Auth-Token`/cookie.
+- **Панель без стилей, кнопки не работают (задан `web_token`).** В сборках до
+  Hotfix проверка токена распространялась и на `style.css`/`app.js`/`config.js`,
+  а браузер не прикладывает `X-Auth-Token` к `<link>`/`<script>`. Теперь первый
+  GET с `?token=…` ставит cookie `susanin_token` (`Path=/`, `HttpOnly`, год),
+  и подресурсы авторизуются автоматически. На старой сборке — обновите
+  бинарник либо временно очистите токен.
 
 ## Сайт не открывается: бан (ТСПУ) или ошибка Susanin?
 

@@ -162,10 +162,17 @@ static int ext_allowed(const char *path)
     return 0;
 }
 
+/* Определена ниже (рядом с cookie_value); нужна здесь для Set-Cookie. */
+static void cookie_encode(const char *s, char *out, size_t n);
+
 /* Отдать файл из www_root (доступ уже проверен по токену). Путь канонизируется:
  * реальный файл обязан лежать внутри www_root (защита от симлинков и «../»), и
- * расширение — из белого списка (никаких .conf и т.п.). */
-static void serve_file(int fd, const char *root, const char *rel, int head_only)
+ * расширение — из белого списка (никаких .conf и т.п.).
+ * auth_token != NULL — токен пришёл в ?token= этого GET; ставим его cookie,
+ * чтобы браузер приложил токен к style.css/app.js/config.js: у <link>/<script>
+ * нет возможности передать X-Auth-Token. */
+static void serve_file(int fd, const char *root, const char *rel, int head_only,
+                       const char *auth_token)
 {
     char path[512];
     char *real = NULL, *rootr = NULL;
@@ -253,21 +260,32 @@ static void serve_file(int fd, const char *root, const char *rel, int head_only)
     }
 
     {
-        char hdr[256];
-        int hl = snprintf(hdr, sizeof(hdr),
-                          "HTTP/1.1 200 OK\r\n"
-                          "Content-Type: %s\r\n"
-                          "Content-Length: %lld\r\n"
-                          "Cache-Control: no-store\r\n"
-                          "Connection: close\r\n"
-                          "X-Content-Type-Options: nosniff\r\n"
-                          "\r\n",
-                          mime_for(real), (long long)st.st_size);
-        if (hl < 0 || send_all(fd, hdr, (size_t)hl) != 0) {
-            close(f);
-            free(rootr);
-            free(real);
-            return;
+        char hdr[640];
+        char cookie[320] = "";
+        if (auth_token && auth_token[0]) {
+            char enc[200];
+            cookie_encode(auth_token, enc, sizeof(enc));
+            snprintf(cookie, sizeof(cookie),
+                     "Set-Cookie: susanin_token=%s; Path=/; Max-Age=31536000; "
+                     "HttpOnly; SameSite=Strict\r\n", enc);
+        }
+        {
+            int hl = snprintf(hdr, sizeof(hdr),
+                              "HTTP/1.1 200 OK\r\n"
+                              "Content-Type: %s\r\n"
+                              "Content-Length: %lld\r\n"
+                              "Cache-Control: no-store\r\n"
+                              "Connection: close\r\n"
+                              "X-Content-Type-Options: nosniff\r\n"
+                              "%s"
+                              "\r\n",
+                              mime_for(real), (long long)st.st_size, cookie);
+            if (hl < 0 || send_all(fd, hdr, (size_t)hl) != 0) {
+                close(f);
+                free(rootr);
+                free(real);
+                return;
+            }
         }
     }
     if (!head_only) {
@@ -358,6 +376,59 @@ static void serve_log(int fd, const susanin_config *cfg, const char *query, int 
     free(buf);
 }
 
+/* Cookie-значение с токеном: символы вроде ';', ' ' или ',' сломали бы
+ * Set-Cookie, поэтому кодируем их %XX (и декодируем при чтении). */
+static int cookie_hex(int c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+static void cookie_encode(const char *s, char *out, size_t n)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t j = 0;
+    for (; *s && j + 1 < n; s++) {
+        unsigned char c = (unsigned char)*s;
+        int safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                   (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+                   c == '.' || c == '~';
+        if (safe) {
+            out[j++] = (char)c;
+        } else {
+            if (j + 3 >= n)
+                break;
+            out[j++] = '%';
+            out[j++] = hex[c >> 4];
+            out[j++] = hex[c & 15];
+        }
+    }
+    out[j] = '\0';
+}
+
+static void cookie_decode(char *s)
+{
+    char *r = s, *w = s;
+    while (*r) {
+        if (r[0] == '%' && r[1] && r[2]) {
+            int hi = cookie_hex((unsigned char)r[1]);
+            int lo = cookie_hex((unsigned char)r[2]);
+            if (hi >= 0 && lo >= 0) {
+                *w++ = (char)((hi << 4) | lo);
+                r += 3;
+                continue;
+            }
+        }
+        *w++ = *r++;
+    }
+    *w = '\0';
+}
+
 /* Сравнение токена за постоянное время: длина и байты, без раннего выхода по
  * первому несовпадению (иначе токен можно подбирать по времени ответа). */
 static int token_eq(const char *a, const char *b)
@@ -425,6 +496,7 @@ static int cookie_value(const char *req, const char *name, char *out, size_t n)
             while (*p && *p != ';' && i + 1 < n)
                 out[i++] = *p++;
             out[i] = '\0';
+            cookie_decode(out);
             return 1;
         }
         p = strchr(p, ';');
@@ -435,10 +507,13 @@ static int cookie_value(const char *req, const char *name, char *out, size_t n)
 }
 
 static int token_ok(const susanin_config *cfg, const char *req, const char *query,
-                    int is_write)
+                    int is_write, int *via_query)
 {
     char need[128];
     const char *tok = cfg->web_token;
+
+    if (via_query)
+        *via_query = 0;
 
     /* Токен не задан — доступ без пароля (только LAN), как в прежних сборках.
      * Это осознанный выбор пользователя: предупреждение пишется в лог на старте. */
@@ -452,7 +527,10 @@ static int token_ok(const susanin_config *cfg, const char *req, const char *quer
 
     /* ?token= принимаем ТОЛЬКО для первичного GET: панель сохраняет его в
      * localStorage и дальше шлёт заголовком. Для изменяющих запросов query не
-     * принимаем — он попадает в историю браузера, referer и логи. */
+     * принимаем — он попадает в историю браузера, referer и логи.
+     * via_query сообщает вызывающему, что токен пришёл из URL: тогда в ответ
+     * на статику ставим cookie, иначе браузер не приложит токен к style.css
+     * и app.js (у <link>/<script> нет заголовков). */
     if (!is_write && query) {
         const char *p = strstr(query, "token=");
         if (p) {
@@ -463,8 +541,11 @@ static int token_ok(const susanin_config *cfg, const char *req, const char *quer
                 i++;
             }
             need[i] = '\0';
-            if (token_eq(need, tok))
+            if (token_eq(need, tok)) {
+                if (via_query)
+                    *via_query = 1;
                 return 1;
+            }
         }
     }
     return 0;
@@ -1208,6 +1289,7 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
     char *query = NULL;
     size_t len = 0;
     int head_only = 0;
+    int qauth = 0;                      /* токен пришёл в ?token= (GET/HEAD) */
 
     /* Конфиг перечитываем на каждый запрос: правки web_token и параметров
      * (в т.ч. через саму панель) применяются сразу, без перезапуска web. */
@@ -1324,7 +1406,7 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
     }
 
     if (!token_ok(cfg, req, query,
-                  strcmp(method, "GET") && strcmp(method, "HEAD"))) {
+                  strcmp(method, "GET") && strcmp(method, "HEAD"), &qauth)) {
         free(bodybig);
         /* Для путей /api/ отдаём JSON: панель разбирает ответ как JSON, а на
          * текстовом теле показывала «Unexpected token 'r', … is not valid JSON». */
@@ -1437,7 +1519,8 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
         return;
     }
 
-    serve_file(fd, SUSANIN_WWW_ROOT, target, head_only);
+    serve_file(fd, SUSANIN_WWW_ROOT, target, head_only,
+               qauth ? cfg->web_token : NULL);
 }
 
 int web_run(const susanin_config *cfg)
