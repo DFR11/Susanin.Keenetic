@@ -447,6 +447,22 @@ if [ "$USE_IPK" -eq 1 ]; then
         say "SHA256: пропущено (нет SHA256SUMS/sha256sum)"
     fi
     [ -n "$IPK_LOCAL" ] || rm -f "$_sums"
+    # Если в системе уже стоит ровно эта версия — opkg скажет «up to date» и НЕ
+    # распакует пересобранные файлы (частый случай, когда пакет пересобрали без
+    # смены номера: остаются старые бинарник/скрипты/www). Тогда ставим с
+    # --force-reinstall сами, без просьбы добавить --force.
+    _newver=$(basename "$IPK_FILE")
+    _newver=${_newver#susanin-keenetic_}
+    _newver=${_newver%_"$OA".ipk}
+    _curver=$(opkg list-installed 2>/dev/null | awk '$1 == "susanin-keenetic" { print $3; exit }')
+    [ -n "$_curver" ] || _curver=$(opkg status susanin-keenetic 2>/dev/null \
+        | sed -n 's/^Version: //p' | head -n1)
+    if [ "$FORCE" -eq 1 ]; then
+        :
+    elif [ -n "$_newver" ] && [ "$_newver" = "$_curver" ]; then
+        say "версия $_curver уже установлена — переустанавливаю с --force-reinstall (чтобы применить пересобранные файлы)"
+        FORCE=1
+    fi
     if [ "$FORCE" -eq 1 ]; then
         say "opkg install --force-reinstall $IPK_FILE"
         opkg install --force-reinstall "$IPK_FILE" \

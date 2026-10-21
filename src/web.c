@@ -890,7 +890,23 @@ static void script_tail(char *out, size_t n)
 
 static int run_script(const char *arg)
 {
-    pid_t p = fork();
+    struct sigaction sa, old;
+    int have_old;
+    pid_t p;
+    int rc = -1;
+
+    /* Родительский процесс web ставит SIGCHLD в SIG_IGN (дети-обработчики
+     * соединений), а этот код выполняется в ребёнке. С унаследованным SIG_IGN
+     * ядро само «съедает» статус нашего дочернего процесса, и waitpid() падает с
+     * ECHILD — отсюда были «restart failed / rescan failed (rc=-1)» при
+     * фактически успешном действии. На время запуска скрипта возвращаем SIG_DFL. */
+    have_old = (sigaction(SIGCHLD, NULL, &old) == 0);
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGCHLD, &sa, NULL);
+
+    p = fork();
     if (p == 0) {
         int dn = open("/opt/susanin/var/action.log",
                       O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -902,14 +918,14 @@ static int run_script(const char *arg)
         execl("/bin/sh", "sh", "/opt/susanin/tools/susanin.sh", arg, (char *)NULL);
         _exit(127);
     }
-    if (p < 0)
-        return -1;
-    {
+    if (p > 0) {
         int st;
-        if (waitpid(p, &st, 0) < 0)
-            return -1;
-        return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+        if (waitpid(p, &st, 0) >= 0)
+            rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
     }
+    if (have_old)
+        sigaction(SIGCHLD, &old, NULL);
+    return rc;
 }
 
 static int valid_entry(const char *s)
