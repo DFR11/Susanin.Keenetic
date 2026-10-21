@@ -777,6 +777,53 @@ static int config_value_ok(const char *k, const char *v)
     return 1;
 }
 
+/* Это процесс нашего агента (а не просто «pid из файла»)? Читаем
+ * /proc/<pid>/cmdline: NUL-разделители заменяем пробелами и ищем
+ * «susanin-agent» + « run». Нужно, чтобы не послать SIGHUP чужому процессу,
+ * которому достался переиспользованный pid. */
+static int pid_is_agent(long pid)
+{
+    char path[64], buf[512];
+    ssize_t r;
+    int f, i;
+    snprintf(path, sizeof(path), "/proc/%ld/cmdline", pid);
+    f = open(path, O_RDONLY);
+    if (f < 0)
+        return 0;
+    r = read(f, buf, sizeof(buf) - 1);
+    close(f);
+    if (r <= 0)
+        return 0;
+    buf[r] = '\0';
+    for (i = 0; i < (int)r; i++)
+        if (buf[i] == '\0')
+            buf[i] = ' ';
+    return strstr(buf, "susanin-agent") != NULL && strstr(buf, " run") != NULL;
+}
+
+/* Запасной поиск агента по /proc (pid-файла может не быть после ручного
+ * запуска или старой версии). */
+static long find_agent_pid(void)
+{
+    DIR *d = opendir("/proc");
+    struct dirent *e;
+    long found = 0;
+    if (!d)
+        return 0;
+    while ((e = readdir(d)) != NULL) {
+        char *end;
+        long pid = strtol(e->d_name, &end, 10);
+        if (*end || pid <= 0)
+            continue;
+        if (pid_is_agent(pid)) {
+            found = pid;
+            break;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
 static int signal_agent(int sig, char *err, size_t errsz)
 {
     FILE *f = fopen("/opt/susanin/var/susanin-agent.pid", "r");
@@ -786,8 +833,12 @@ static int signal_agent(int sig, char *err, size_t errsz)
             pid = 0;
         fclose(f);
     }
+    if (pid > 0 && !pid_is_agent(pid))
+        pid = 0;                 /* pid переиспользован другим процессом */
+    if (pid <= 0)
+        pid = find_agent_pid();
     if (pid <= 0) {
-        snprintf(err, errsz, "agent pid not found");
+        snprintf(err, errsz, "агент не запущен (pid не найден)");
         return -1;
     }
     if (kill((pid_t)pid, sig) != 0) {
@@ -797,11 +848,52 @@ static int signal_agent(int sig, char *err, size_t errsz)
     return 0;
 }
 
+/* Последняя непустая строка вывода скрипта (action.log): панель покажет её в
+ * ошибке, иначе «restart failed» ничего не объясняет. */
+static void script_tail(char *out, size_t n)
+{
+    int f;
+    char buf[400];
+    ssize_t r;
+    off_t sz;
+    size_t i;
+    out[0] = '\0';
+    f = open("/opt/susanin/var/action.log", O_RDONLY);
+    if (f < 0)
+        return;
+    sz = lseek(f, 0, SEEK_END);
+    if (sz > (off_t)sizeof(buf) - 1)
+        lseek(f, sz - (off_t)(sizeof(buf) - 1), SEEK_SET);
+    r = read(f, buf, sizeof(buf) - 1);
+    close(f);
+    if (r <= 0)
+        return;
+    buf[r] = '\0';
+    /* Берём последнюю строку, переводы строк заменяем на пробелы. */
+    {
+        char *p = strrchr(buf, '\n');
+        if (p && p[1])
+            memmove(buf, p + 1, strlen(p + 1) + 1);
+    }
+    for (i = 0; buf[i]; i++) {
+        if (buf[i] == '\n' || buf[i] == '\r')
+            buf[i] = ' ';
+    }
+    {
+        size_t len = strlen(buf);
+        if (len >= n)
+            len = n - 1;
+        memcpy(out, buf, len);
+        out[len] = '\0';
+    }
+}
+
 static int run_script(const char *arg)
 {
     pid_t p = fork();
     if (p == 0) {
-        int dn = open("/dev/null", O_WRONLY);
+        int dn = open("/opt/susanin/var/action.log",
+                      O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (dn >= 0) {
             dup2(dn, 1);
             dup2(dn, 2);
@@ -1221,12 +1313,28 @@ static void handle_action(int fd, const susanin_config *cfg, const char *target,
         return;
     }
     if (!strcmp(target, "/api/rescan")) {
-        if (run_script("rescan") != 0) { json_err(fd, "rescan failed"); return; }
+        int rc = run_script("rescan");
+        if (rc != 0) {
+            char tail[200], msg[320];
+            script_tail(tail, sizeof(tail));
+            snprintf(msg, sizeof(msg), "rescan failed (rc=%d)%s%s", rc,
+                     tail[0] ? ": " : "", tail);
+            json_err(fd, msg);
+            return;
+        }
         json_ok(fd, "\"action\":\"rescan\"");
         return;
     }
     if (!strcmp(target, "/api/restart")) {
-        if (run_script("restart") != 0) { json_err(fd, "restart failed"); return; }
+        int rc = run_script("restart");
+        if (rc != 0) {
+            char tail[200], msg[320];
+            script_tail(tail, sizeof(tail));
+            snprintf(msg, sizeof(msg), "restart failed (rc=%d)%s%s", rc,
+                     tail[0] ? ": " : "", tail);
+            json_err(fd, msg);
+            return;
+        }
         json_ok(fd, "\"action\":\"restart\"");
         return;
     }

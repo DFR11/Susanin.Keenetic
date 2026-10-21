@@ -64,6 +64,7 @@ cmd_web_start() {
     SUSANIN_CONF="$CONF" "$BIN" web >>"$WEB_LOG" 2>&1 </dev/null &
     echo $! > "$WEB_PID"
     echo "[susanin] web started (pid $(cat "$WEB_PID" 2>/dev/null))"
+    return 0
 }
 
 cmd_web_stop() {
@@ -156,10 +157,12 @@ cmd_stop() {
 cmd_restart() {
     # Демон перезапускаем, веб-панель НЕ трогаем (чтобы /api/restart не убивал
     # процесс, обслуживающий сам запрос); при необходимости поднимаем её.
+    # Статус веб-панели не должен превращать успешный рестарт в «restart failed».
     stop_daemon
     sleep 1
     start_daemon || return 1
-    cmd_web_start
+    cmd_web_start || true
+    return 0
 }
 
 cmd_status() {
@@ -242,6 +245,7 @@ cmd_rescan() {
         echo "[susanin] обновлено:$_changed"
     fi
     cmd_reload || true
+    return 0
 }
 
 case "${1:-}" in
