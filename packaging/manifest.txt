@@ -1,4 +1,4 @@
-# Единый список того, что ПОСТАВЛЯЕТСЯ (0.4.0.RC1).
+# Единый список того, что ПОСТАВЛЯЕТСЯ (0.4.0.RC1.Hotfix).
 #
 # Читают: tools/make-ipk.sh (.ipk), tools/stage-release.sh (CI tar-архив),
 # tools/repack-develop.sh и tools/check-shipping.sh (проверка, что ничего не

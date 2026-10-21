@@ -440,11 +440,10 @@ static int token_ok(const susanin_config *cfg, const char *req, const char *quer
     char need[128];
     const char *tok = cfg->web_token;
 
-    /* Токен не задан: панель открыта только на чтение. Изменяющие запросы
-     * (POST /api/config, /api/list/save, /api/reload …) без токена запрещены —
-     * иначе любой в LAN мог бы менять конфиг и подсовывать значения в скрипты. */
+    /* Токен не задан — доступ без пароля (только LAN), как в прежних сборках.
+     * Это осознанный выбор пользователя: предупреждение пишется в лог на старте. */
     if (!tok[0])
-        return is_write ? 0 : 1;
+        return 1;
 
     if (header_value(req, "X-Auth-Token", need, sizeof(need)) && token_eq(need, tok))
         return 1;
@@ -1327,10 +1326,15 @@ static void handle_conn(int fd, const susanin_config *cfg_in)
     if (!token_ok(cfg, req, query,
                   strcmp(method, "GET") && strcmp(method, "HEAD"))) {
         free(bodybig);
-        reply_text(fd, cfg->web_token[0] ? 401 : 403,
-                   cfg->web_token[0] ? "unauthorized"
-                                     : "read-only: set web_token to allow changes",
-                   head_only);
+        /* Для путей /api/ отдаём JSON: панель разбирает ответ как JSON, а на
+         * текстовом теле показывала «Unexpected token 'r', … is not valid JSON». */
+        if (!strncmp(target, "/api/", 5)) {
+            char jb[128];
+            snprintf(jb, sizeof(jb), "{\"ok\":false,\"error\":\"unauthorized\"}");
+            reply(fd, 401, "application/json; charset=utf-8", jb, strlen(jb), head_only);
+        } else {
+            reply_text(fd, 401, "unauthorized", head_only);
+        }
         return;
     }
 

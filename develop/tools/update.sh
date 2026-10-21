@@ -203,7 +203,7 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     for kv in web_enable=0 web_listen= web_port=8087 web_token= \
               egress_type=interface tproxy_port=12345 \
               discover_exclude=wdtt0,wdttraw0,tun0,tap0 \
-              fast_syn_min_op=2 ok_max_entries=4096 ok_evict_misses=3 promo_per_min=30 \
+              fast_syn_min_op=2 ok_max_entries=4096 ok_evict_misses=3 promo_per_min=120 \
               soft_state_interval=12 \
               egress_interface=nwg0 egress_address=10.8.1.1 lan_interfaces=br0 lan_subnets= \
               routing_table=100 mark_test=0x10000000 mark_ok=0x20000000 mark_mask=0x30000000 \
@@ -237,6 +237,14 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
         grep -q "^${k}=" "$PREFIX/etc/susanin.conf" 2>/dev/null \
             || printf '%s=%s\n' "$k" "$d" >> "$PREFIX/etc/susanin.conf"
     done
+
+    # Миграция значений по умолчанию (0.4.0.RC1.Hotfix): promo_per_min 30 -> 120.
+    # Меняем только прежний дефолт; своё значение пользователя не трогаем.
+    _pp=$(sed -n 's/^promo_per_min=//p' "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
+    if [ "$_pp" = "30" ]; then
+        sed -i 's/^promo_per_min=.*/promo_per_min=120/' "$PREFIX/etc/susanin.conf" 2>/dev/null \
+            && say "promo_per_min: 30 -> 120 (новый дефолт)"
+    fi
 fi
 
 # Данные CDN (cdn_ranges.txt): ставим, если файла ещё нет; существующий не трогаем.

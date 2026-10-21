@@ -417,18 +417,19 @@ opkg update && opkg install ca-certificates wget-ssl
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh | sh -s -- --ipk
 ```
 
-> `--ipk` появился в 0.4.0.RC1 — скрипт берётся из ветки `develop` (там RC1).
-> Пакет установщик берёт из последнего релиза, а если релиза с `.ipk` ещё нет —
-> из каталога `develop/ipk/` в самой ветке (по `SHA256SUMS`): установка пакетом
-> работает и до публикации релиза. Ответ `ERROR: unknown arg: --ipk` означает,
-> что взят скрипт из `main` (там этой версии ещё нет) или старый кэш.
+> `--ipk` появился в 0.4.0.RC1 (в Hotfix — то же плюс исправления); скрипт берётся
+> из ветки `develop`. Пакет установщик берёт из последнего релиза, а если релиза с
+> `.ipk` ещё нет — из каталога `develop/ipk/` в самой ветке (по `SHA256SUMS`):
+> установка пакетом работает и до публикации релиза. Ответ
+> `ERROR: unknown arg: --ipk` означает, что взят скрипт из `main` (там этой версии
+> ещё нет) или старый кэш.
 
 Что делает `--ipk`: определяет архитектуру Entware (`opkg print-architecture`,
 нормализация `mipsel-3.4` → `mipsel` и т.д.), скачивает
 `susanin-keenetic_<версия>_<arch>.ipk` из релиза в `/opt/tmp`, сверяет SHA256 по
 `SHA256SUMS` из этого же релиза (не совпало — установка отменяется) и выполняет
 `opkg install` (с `--force` — `opkg install --force-reinstall`).
-Флаги: `--version v0.4.0.RC1` (без него — последний релиз), `--force`
+Флаги: `--version v0.4.0.RC1.Hotfix` (без него — последний релиз), `--force`
 (переустановить), `--yes` (без вопросов), `--arch mipsel|mips|aarch64|armv7|x86_64`
 (если автоопределение не сработало), `--with-xray-tproxy` — режим VLESS/REALITY:
 скачает Xray в `/opt/sbin/xray`, сверит SHA256 и положит шаблон tproxy-конфига
@@ -450,29 +451,29 @@ opkg print-architecture | awk '{print $2}'
 
 | Архитектура Entware | Файл из релиза |
 |---|---|
-| `mipsel-3.4` (MT7621: Viva, Giga, Ultra и т.п.) | `susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk` |
-| `mips-3.4` | `susanin-keenetic_0.4.0.RC1_mips-3.4.ipk` |
-| `aarch64-3.10` | `susanin-keenetic_0.4.0.RC1_aarch64-3.10.ipk` |
-| `armv7sf-k3.2` | `susanin-keenetic_0.4.0.RC1_armv7sf-k3.2.ipk` |
-| `x86-64` | `susanin-keenetic_0.4.0.RC1_x86-64.ipk` |
+| `mipsel-3.4` (MT7621: Viva, Giga, Ultra и т.п.) | `susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk` |
+| `mips-3.4` | `susanin-keenetic_0.4.0.RC1.Hotfix_mips-3.4.ipk` |
+| `aarch64-3.10` | `susanin-keenetic_0.4.0.RC1.Hotfix_aarch64-3.10.ipk` |
+| `armv7sf-k3.2` | `susanin-keenetic_0.4.0.RC1.Hotfix_armv7sf-k3.2.ipk` |
+| `x86-64` | `susanin-keenetic_0.4.0.RC1.Hotfix_x86-64.ipk` |
 
 Скачивание, **проверка суммы и только потом установка** (подставьте свой файл из
 таблицы; в имени и в URL — одна и та же версия):
 
 ```sh
 mkdir -p /opt/tmp && cd /opt/tmp
-wget -O susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk \
-  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
+wget -O susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk \
+  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1.Hotfix/susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk
 wget -O SHA256SUMS \
-  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1/SHA256SUMS
+  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1.Hotfix/SHA256SUMS
 sha256sum -c SHA256SUMS 2>/dev/null | grep mipsel-3.4   # ожидаем: ...: OK
-opkg install susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
+opkg install susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk
 susanin version && susanin status && susanin diagnose
 ```
 
 Если `wget` без HTTPS (BusyBox) — вместо `wget -O …` используйте
-`curl -fL -o …` с тем же адресом. Для новой версии замените `0.4.0.RC1`
-(в `v0.4.0.RC1` — соответственно `v0.4.0.RC1`) на её номер.
+`curl -fL -o …` с тем же адресом. Для новой версии замените `0.4.0.RC1.Hotfix`
+(в `v0.4.0.RC1.Hotfix` — соответственно `v0.4.0.RC1.Hotfix`) на её номер.
 
 Пакет ставит демон, скрипты, init-скрипты Entware, веб-панель и документацию в
 `/opt/susanin`. Конфиг (`susanin.conf`), списки `vpn_always`/`vpn_never`,
@@ -652,7 +653,7 @@ docker build -f Dockerfile.cross -t susanin-build .
 |---|---|---|
 | `egress_interface` | VPN-интерфейс(ы); несколько через запятую = фейловер. Можно указать `tproxy` (синоним `xray`) — резервный путь через Xray: проверяется SOCKS-пробой, при переключении датаплейн пересобирается в tproxy-режиме | `nwg0` |
 | `egress_address` | адрес(а) туннеля, по порядку с `egress_interface` | `10.8.1.1` |
-| `lan_interfaces` / `lan_subnets` | LAN, трафик которых анализируем. При OpenConnect-сервере добавьте в конец `oc+` (с 0.4.0.RC1 `discover` держит его сам) | `br0,br1` |
+| `lan_interfaces` / `lan_subnets` | LAN, трафик которых анализируем. При OpenConnect-сервере добавьте в конец `oc+` (с 0.4.0.RC1.Hotfix `discover` держит его сам) | `br0,br1` |
 | `routing_table` | номер таблицы (должен быть малым) | `100` |
 | `ok_ttl` | срок жизни подтверждённых адресов; `0` = бессрочно | `0` |
 | `fast_syn_min_op` | сколько SYN без ответа нужно для срабатывания | `2` (`1` = быстрее) |

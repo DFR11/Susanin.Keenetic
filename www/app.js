@@ -51,11 +51,30 @@
   }
 
 
+  /* Читаемая ошибка вместо «Unexpected token»: сервер может ответить текстом
+   * (старые сборки) или JSON {"ok":false,"error":"…"} (RC1+). */
+  function respErr(r) {
+    return r.text().then(function (t) {
+      var msg = (t || '').trim();
+      try {
+        var j = JSON.parse(msg);
+        if (j && j.error) msg = j.error;
+      } catch (e) { /* не JSON — оставляем текст как есть */ }
+      if (r.status === 401) msg = 'нужен токен (обновите страницу с ?token=…)';
+      else if (r.status === 403) {
+        msg = 'панель только для чтения: задайте токен — ' +
+              'susanin-agent config set web_token <секрет>, затем susanin restart';
+      } else if (r.status === 413) msg = 'список больше 64 КБ — правьте его на роутере';
+      else if (!msg) msg = 'HTTP ' + r.status;
+      return new Error(msg);
+    }).catch(function () { return new Error('HTTP ' + r.status); });
+  }
+
   function api(path) {
     var headers = {};
     if (token) headers['X-Auth-Token'] = token;
     return fetch(path, { headers: headers, cache: 'no-store' }).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (!r.ok) return respErr(r).then(function (e) { throw e; });
       return r.text();
     });
   }
@@ -67,7 +86,8 @@
     var headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
     if (token) headers['X-Auth-Token'] = token;
     return fetch(path, { method: 'POST', headers: headers, body: body }).then(function (r) {
-      return r.json();
+      if (!r.ok) return respErr(r).then(function (e) { throw e; });
+      return r.json().catch(function () { return { ok: false, error: 'плохой ответ сервера' }; });
     });
   }
 

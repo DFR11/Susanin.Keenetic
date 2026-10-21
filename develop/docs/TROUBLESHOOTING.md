@@ -228,7 +228,7 @@ sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
 
 Причина: health-проба ходит ICMP-эхом со своим Echo ID; если на промежуточном
 сервере каскада (Keenetic → РФ → NL) залипло NAT-состояние по этому ID, ответы
-перестают приходить, хотя туннель жив. До 0.4.0.RC1 ID был постоянным (равен PID
+перестают приходить, хотя туннель жив. До 0.4.0.RC1.Hotfix ID был постоянным (равен PID
 демона), поэтому «лечил» только перезапуск.
 
 Что делать:
@@ -237,7 +237,7 @@ sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
    ping -I nwg0 1.1.1.1            # нужен адрес/интерфейс вашего туннеля
    curl -sI https://1.1.1.1 --interface nwg0 | head -1
    ```
-2. Если ping идёт, а агент считает egress мёртвым — обновиться до 0.4.0.RC1:
+2. Если ping идёт, а агент считает egress мёртвым — обновиться до 0.4.0.RC1.Hotfix:
    там Echo ID случайный на каждую цель, при молчании ICMP делается TCP-проба
    через тот же egress, а простой пишется в лог раз в 5 минут.
 3. Посмотреть, что было:
@@ -266,7 +266,7 @@ sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
 sed -i 's|^lan_interfaces=.*|lan_interfaces=br0,br1,oc+|' /opt/susanin/etc/susanin.conf
 sh /opt/susanin/tools/susanin.sh restart
 ```
-С 0.4.0.RC1 `discover`/`rescan` держат `oc+` и подсеть пула сами, пока жив
+С 0.4.0.RC1.Hotfix `discover`/`rescan` держат `oc+` и подсеть пула сами, пока жив
 OpenConnect-сервер, а `diagnose.sh` предупреждает, если этого нет.
 
 Проверка, что клиент обрабатывается:
@@ -285,13 +285,33 @@ grep 172.16.5 /proc/net/nf_conntrack | head -3     # mark=0x20000000/0x10000000
   разведены). До обновления поможет `S95susanin-web start`.
 - Проверка: `netstat -lnt | grep 8087` и
   `curl -s -H 'X-Auth-Token: ТОКЕН' http://127.0.0.1:8087/api/status | head -c 200`.
-- **Пустой `web_token` — панель только на чтение.** Просмотр работает, а любые
-  изменения (`/api/config`, `/api/list/save`, Reload/Restart) отклоняются с
-  403. Задайте токен в конфиге:
-  `susanin-agent config set web_token <секрет> && susanin restart` (или впишите
-  `web_token=…` в `susanin.conf`). После этого панель можно открыть с
-  `?token=<секрет>` один раз — дальше токен хранится в браузере и уходит только
-  заголовком `X-Auth-Token`/cookie, а не в URL.
+- **Пустой `web_token` = доступ без пароля, но только из LAN** — панель работает
+  полностью (Reload/Restart/сохранение), как в сборках до RC1. Так и задумано:
+  токен — необязательное усиление. Если хотите закрыть панель паролем:
+  `susanin-agent config set web_token <секрет> && susanin restart`, затем
+  открывайте один раз с `?token=<секрет>` — дальше токен хранится в браузере и
+  уходит заголовком `X-Auth-Token`/cookie.
+
+## Сайт не открывается: бан (ТСПУ) или ошибка Susanin?
+
+Сначала понять, **где** рвётся. На роутере для проблемного имени:
+
+```sh
+nslookup px1.rapo.dev                       # какой IP
+curl -v --max-time 10 https://px1.rapo.dev 2>&1 | tail -20     # напрямую
+curl -v --max-time 10 --interface nwg1 https://px1.rapo.dev 2>&1 | tail -20  # через VPN
+grep 193.233.218.166 /proc/net/nf_conntrack | head -3          # какая метка у потока
+ipset test susanin_never 193.233.218.166                       # не в «напрямую» ли
+ipset test susanin_ok_tcp 193.233.218.166                       # не выучен ли в VPN
+```
+
+Что означает вывод:
+
+- **напрямую `Connection reset by peer` сразу после ClientHello / `SSL_ERROR_SYSCALL`**, а через `nwg1` — `200`/`302` → это блокировка по SNI (ТСПУ). Лечится VPN; в Susanin добавьте домен в `vpn_always.txt` (или дождитесь автообучения).
+- **напрямую `timed out`** → блок по IP; то же лечение.
+- **через VPN тоже `reset`/`timeout`** → дело не в блокировке: хостинг/файрвол не пускает адрес VPN-выхода (часто бывает у российских хостингов и у серверов с allowlist). Проверьте `ping -I nwg1 <IP>` и `curl` ещё раз; если так — нужен другой egress, Susanin не поможет.
+- **оба способа дают `200`** → блокировки нет, а Susanin ошибся (ложное срабатывание). Сбросьте адрес: `susanin forget <IP>`, при необходимости уберите из `vpn_always.txt`.
+- Если в логе по этому IP видно `COOLDOWN` — это значит «проба через VPN не прошла», а не «заблокировано»: см. третий пункт.
 
 ## Профили маршрутизации не применяются
 

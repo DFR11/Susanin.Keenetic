@@ -115,7 +115,7 @@ void config_set_defaults(susanin_config *c)
     c->ok_refresh_below = 3 * 3600;
     c->ok_max_entries = 4096;
     c->ok_evict_misses = 3;
-    c->promo_per_min = 30;
+    c->promo_per_min = 120;
     c->test_ttl = 60;
     c->cooldown_ttl = 5 * 60;
     c->cooldown_ok_ttl = 30;

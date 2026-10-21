@@ -152,6 +152,7 @@ while [ $# -gt 0 ]; do
         --no-start) INSTALL_ARGS="$INSTALL_ARGS --no-start" ;;
         --deps) INSTALL_ARGS="$INSTALL_ARGS --deps" ;;
         --with-xray-tproxy) INSTALL_ARGS="$INSTALL_ARGS --with-xray-tproxy" ;;
+        --with-oc) INSTALL_ARGS="$INSTALL_ARGS --with-oc" ;;
         --egress|--lan|--subnets|--prefix|--disk-mode)
             need_val $# "$1"; INSTALL_ARGS="$INSTALL_ARGS $1 $2"; shift ;;
         -h|--help) usage; exit 0 ;;

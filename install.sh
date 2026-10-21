@@ -31,6 +31,7 @@ DEPS=0
 XRAYTUN=0
 USE_IPK=0
 IPK_LOCAL=""     # --ipk-file: уже скачанный .ipk на устройстве (без релиза)
+WITH_OC=0        # --with-oc: добавить oc+ (только осознанно, не по умолчанию)
 
 say() { echo "[susanin] $*"; }
 die() { echo "[susanin] ERROR: $*" >&2; exit 1; }
@@ -159,13 +160,14 @@ while [ $# -gt 0 ]; do
         # Локальный .ipk (без релиза/интернета): --ipk-file /opt/tmp/x.ipk
         --ipk-file) IPK_LOCAL="$2"; USE_IPK=1; shift ;;
         --with-xray-tproxy) XRAYTUN=1 ;;
+        --with-oc) WITH_OC=1 ;;
         --yes|-y) YES=1 ;;
         --force) FORCE=1 ;;
         --no-start) NO_START=1 ;;
         -h|--help)
             echo "usage: $0 [--arch mipsel|mips|aarch64|armv7|x86_64] [--version latest|vX.Y.Z]"
             echo "          [--ipk] [--egress IF] [--lan IF,IF] [--subnets CIDR,CIDR] [--prefix DIR]"
-            echo "          [--disk-mode normal|soft] [--deps] [--with-xray-tproxy]"
+            echo "          [--disk-mode normal|soft] [--deps] [--with-xray-tproxy] [--with-oc]"
             echo "          [--yes] [--force] [--no-start]"
             echo
             echo "  --ipk        ставить пакетом Entware (.ipk) из релиза вместо tar-архива:"
@@ -177,6 +179,8 @@ while [ $# -gt 0 ]; do
             echo "               Default: autodetect by /opt mount."
             echo "  --deps       доустановить недостающие пакеты через opkg без вопроса"
             echo "  --with-xray-tproxy  проверить Xray и положить шаблон tproxy-конфига"
+            echo "  --with-oc    добавить 'oc+' (клиенты OpenConnect-сервера) в lan_interfaces."
+            echo "               По умолчанию НЕ добавляется: сервер есть не у всех."
             echo
             echo "  Prompts: answer 'y' (or 'yes'); --yes|-y skips all prompts."
             exit 0 ;;
@@ -611,13 +615,18 @@ if [ "$oc_srv" = 1 ]; then
         *",oc+"*|*",oc0"*)
             say "OpenConnect: клиенты уже в lan_interfaces" ;;
         *)
+            # OpenConnect есть не у всех: без явного --with-oc НЕ добавляем, даже
+            # с --yes. Раньше --yes молча добавлял oc+ всем, у кого включён
+            # ocserver, и это ломало чужие установки.
             add_oc=0
-            if [ "$YES" -eq 1 ]; then
+            if [ "$WITH_OC" -eq 1 ]; then
                 add_oc=1
-            elif [ -r /dev/tty ]; then
-                printf "[susanin] OpenConnect server detected (oc+). Add clients to Susanin.Keenetic routing? [y/N]: " >&2
+            elif [ "$YES" -eq 0 ] && [ -r /dev/tty ]; then
+                printf "[susanin] OpenConnect server detected. Add its clients (oc+) to routing? [y/N, или флаг --with-oc]: " >&2
                 read _oc < /dev/tty || _oc=n
                 case "$_oc" in y|Y|yes|YES) add_oc=1 ;; esac
+            else
+                say "OpenConnect обнаружен, но не добавлен (нужен явный --with-oc)"
             fi
             if [ "$add_oc" -eq 1 ]; then
                 oc_net=$(sed -n 's/^ipv4-network=//p' /var/run/ocserv/ocserv.conf 2>/dev/null | head -1)
@@ -792,7 +801,7 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" fast_syn_min_op 2
     ensure_key "$PREFIX/etc/susanin.conf" ok_max_entries 4096
     ensure_key "$PREFIX/etc/susanin.conf" ok_evict_misses 3
-    ensure_key "$PREFIX/etc/susanin.conf" promo_per_min 30
+    ensure_key "$PREFIX/etc/susanin.conf" promo_per_min 120
     ensure_key "$PREFIX/etc/susanin.conf" soft_state_interval 12
     ensure_key "$PREFIX/etc/susanin.conf" learn_exclude_ports "22,23,53,135,137,138,139,445,500,554,853,1433,1723,3306,3389,4500,5432,5900,6379,7547,8567,9100,11211,27017"
     ensure_key "$PREFIX/etc/susanin.conf" vpn_always_file /opt/susanin/etc/vpn_always.txt
@@ -876,6 +885,17 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" mss_clamp 0
     ensure_key "$PREFIX/etc/susanin.conf" mss_clamp_lan 0
     ensure_key "$PREFIX/etc/susanin.conf" profile_failover 1
+fi
+
+# --- миграция значений по умолчанию (0.4.0.RC1.Hotfix) ----------------------
+# promo_per_min: дефолт поднят 30 -> 120 (обучение быстрее). Меняем только если
+# в конфиге стоит прежний дефолт — своё значение пользователя не трогаем.
+if [ -f "$PREFIX/etc/susanin.conf" ]; then
+    _pp=$(sed -n 's/^promo_per_min=//p' "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
+    if [ "$_pp" = "30" ]; then
+        sed -i 's/^promo_per_min=.*/promo_per_min=120/' "$PREFIX/etc/susanin.conf" 2>/dev/null \
+            && say "promo_per_min: 30 -> 120 (новый дефолт)"
+    fi
 fi
 
 # Каталоги профилей маршрутизации: profiles (списки) и profiles.d (секции).

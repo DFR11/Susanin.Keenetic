@@ -203,7 +203,7 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/instal
 ключи, поднимет Xray и перезапустит агента). Откат — `disable`. Подробности,
 проверка TCP/UDP и грабли — [XRAY.md](XRAY.md).
 
-**Резервный путь через Xray (кандидат `tproxy`).** С 0.4.0.RC1 в
+**Резервный путь через Xray (кандидат `tproxy`).** С 0.4.0.RC1.Hotfix в
 `egress_interface` можно указать `tproxy` (синоним `xray`) вместе с обычными
 интерфейсами: `egress_interface=nwg1,tproxy`. Кандидат проверяется SOCKS-пробой
 апстрима Xray; если `nwg1` пропал, агент переключит датаплейн в tproxy-режим
@@ -212,7 +212,7 @@ Xray не слушает `tproxy_port`, переключения не будет
 
 **Клиенты OpenConnect-сервера.** Если на роутере поднят OpenConnect, добавьте в
 `lan_interfaces` шаблон `oc+` В КОНЕЦ списка (`br0,br1,oc+`) — иначе трафик
-клиентов не обрабатывается («часть сайтов висит»). С 0.4.0.RC1 `discover`/`rescan`
+клиентов не обрабатывается («часть сайтов висит»). С 0.4.0.RC1.Hotfix `discover`/`rescan`
 держат `oc+` и подсеть пула автоматически, пока сервер жив.
 
 ## Обновление и удаление
@@ -223,7 +223,7 @@ sh /opt/susanin/tools/susanin.sh uninstall        # снять, конфиг с�
 sh /opt/susanin/tools/susanin.sh uninstall --purge # удалить всё
 ```
 
-Начиная с 0.4.0.RC1 доступна установка пакетом Entware. Проще всего — дать
+Начиная с 0.4.0.RC1.Hotfix доступна установка пакетом Entware. Проще всего — дать
 установщику определить архитектуру и поставить пакет:
 
 ```sh
@@ -231,14 +231,14 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/instal
 ```
 
 Он скачает нужный `.ipk` из последнего релиза в `/opt/tmp`, сверит SHA256 по
-`SHA256SUMS` и выполнит `opkg install`. Флаги: `--version v0.4.0.RC1`,
+`SHA256SUMS` и выполнит `opkg install`. Флаги: `--version v0.4.0.RC1.Hotfix`,
 `--force` (переустановить), `--yes` (без вопросов). Вручную то же самое:
 
 ```sh
 mkdir -p /opt/tmp
-wget -O /opt/tmp/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk \
-  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
-opkg install /opt/tmp/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
+wget -O /opt/tmp/susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk \
+  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1.Hotfix/susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk
+opkg install /opt/tmp/susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk
 ```
 
 Файл под свою архитектуру (её показывает `opkg print-architecture`) выбирайте по

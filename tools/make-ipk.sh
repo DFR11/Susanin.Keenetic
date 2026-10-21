@@ -1,5 +1,5 @@
 #!/bin/sh
-# make-ipk.sh — собрать .ipk-пакеты для Entware (задача T15 / 0.4.0.RC1).
+# make-ipk.sh — собрать .ipk-пакеты для Entware (задача T15 / 0.4.0.RC1.Hotfix).
 #
 # .ipk — это gzip(tar) с членами ./debian-binary, ./data.tar.gz, ./control.tar.gz
 # (именно так упакованы пакеты в фиде Entware; классический ar-вариант
@@ -8,7 +8,7 @@
 #
 # Использование:
 #   sh tools/make-ipk.sh [--bin DIR] [--out DIR] [--version X] [arch…]
-#   sh tools/make-ipk.sh --bin build --out dist --version 0.4.0.RC1
+#   sh tools/make-ipk.sh --bin build --out dist --version 0.4.0.RC1.Hotfix
 #   sh tools/make-ipk.sh --bin build --out dist --one mipsel /path/susanin-agent
 #
 # Без --one собирает все архитектуры, для которых есть <bin>/susanin-agent.<arch>.

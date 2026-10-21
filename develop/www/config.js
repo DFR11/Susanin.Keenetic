@@ -1028,7 +1028,22 @@
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/x-www-form-urlencoded' }),
       body: body.toString()
-    }).then(function (r) { return r.json(); }).then(function (r) {
+    }).then(function (r) {
+      if (!r.ok) {
+        /* 403 = панель в режиме «только чтение» (web_token не задан). */
+        if (r.status === 403) {
+          throw new Error('панель только для чтения: задайте токен — ' +
+                          'susanin-agent config set web_token <секрет>, затем susanin restart');
+        }
+        if (r.status === 401) throw new Error('нужен токен (обновите страницу с ?token=…)');
+        return r.text().then(function (t) {
+          var msg = (t || '').trim();
+          try { var j = JSON.parse(msg); if (j && j.error) msg = j.error; } catch (e) {}
+          throw new Error(msg || ('HTTP ' + r.status));
+        });
+      }
+      return r.json();
+    }).then(function (r) {
       if (r && r.ok) {
         /* web_token — write-only: после смены запоминаем/снимаем локально,
          * иначе следующий же запрос уйдёт со старым токеном. */

@@ -17,7 +17,7 @@ Release-сборкам и для dev-сборки не используются.
 
 ## Установка
 
-1. **Пакетом Entware `.ipk`** (0.4.0.RC1+, рекомендуемый способ) — архитектура
+1. **Пакетом Entware `.ipk`** (0.4.0.RC1.Hotfix+, рекомендуемый способ) — архитектура
    определяется автоматически, файл берётся из последнего релиза (а пока релиза с
    `.ipk` нет — из `develop/ipk/` в ветке, с проверкой `SHA256SUMS`) и ставится
    штатным `opkg` (учёт пакета, `opkg remove`, конфиг и списки не перезаписываются):
@@ -32,12 +32,12 @@ Release-сборкам и для dev-сборки не используются.
    ставить (файл и версию в URL подставьте свои — таблица в [README.md](README.md)):
    ```sh
    mkdir -p /opt/tmp && cd /opt/tmp
-   wget -O susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk \
-     https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1/susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
+   wget -O susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk \
+     https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1.Hotfix/susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk
    wget -O SHA256SUMS \
-     https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1/SHA256SUMS
+     https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1.Hotfix/SHA256SUMS
    sha256sum -c SHA256SUMS 2>/dev/null | grep mipsel-3.4
-   opkg install susanin-keenetic_0.4.0.RC1_mipsel-3.4.ipk
+   opkg install susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk
    ```
    Имя файла под свою архитектуру (`opkg print-architecture`) — по таблице в
    [README.md](README.md) → «Пакетом Entware `.ipk`».

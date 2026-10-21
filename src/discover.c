@@ -272,23 +272,19 @@ static int csv_has_oc(const char *csv)
     return 0;
 }
 
-/* Клиенты OpenConnect должны обрабатываться всегда, пока сервер жив: одиночный
- * oc0 создаётся по требованию и выпадает из lan_interfaces после `rescan` с
- * отключённым клиентом (регрессия 2026-10-14 — «часть сайтов висит, status
- * зелёный»). Держим шаблон 'oc+' и подсеть пула идемпотентно. */
+/* OpenConnect — НЕ у всех: сами 'oc+' в lan_interfaces не добавляем. Задача этой
+ * функции — поддержать тех, кто уже указал oc+/ocN вручную: держим подсеть пула,
+ * чтобы адреса клиентов не выпадали из обработки после rescan (регрессия
+ * 2026-10-14: «часть сайтов висит, status зелёный»). */
 static void merge_ocserv(const susanin_config *c, susanin_discovery *d)
 {
     char pool[64], cidr[64];
     int i;
     (void)c;
+    if (!csv_has_oc(d->lan_interfaces))
+        return;
     if (!ocserv_alive())
         return;
-    if (!csv_has_oc(d->lan_interfaces)) {
-        /* В КОНЕЦ списка: dns_sniff и DNS-fallback vpn_always берут первый
-         * интерфейс списка. */
-        append_csv(d->lan_interfaces, sizeof(d->lan_interfaces), "oc+");
-        slogf(SL_INFO, "discover: OpenConnect-сервер жив — добавлен 'oc+' в lan_interfaces");
-    }
     if (ocserv_pool(pool, sizeof(pool)) == 0 && strchr(pool, '/')) {
         if (!csv_has(d->lan_subnets, pool))
             append_csv(d->lan_subnets, sizeof(d->lan_subnets), pool);
