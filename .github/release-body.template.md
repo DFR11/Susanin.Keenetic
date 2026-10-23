@@ -30,12 +30,16 @@ opkg install susanin-keenetic_{{VER}}_mipsel-3.4.ipk
 
 ### Обновление
 ```sh
-# если ставили пакетом (версия новее установленной, --force не нужен):
+# если ставили пакетом:
 opkg install susanin-keenetic_{{VER}}_<arch>.ipk
 
 # если ставили архивом:
 sh /opt/susanin/tools/susanin.sh update {{TAG}}
 ```
+Если установлена `0.4.0.RC1.Hotfix`, opkg считает `{{VER}}` понижением
+(`{{VER}}` < `0.4.0.RC1.Hotfix`) и откажется ставить — используйте
+`opkg install --force-downgrade susanin-keenetic_{{VER}}_<arch>.ipk` или
+обновление архивом (`susanin.sh update`).
 `update` печатает `installed → target`, делает бэкап `susanin.conf` и
 `susanin.state` в `/opt/susanin/var/backup/`, заменяет бинарь и скрипты,
 **не трогая** `etc/` и `var/`, затем перезапускает демон.

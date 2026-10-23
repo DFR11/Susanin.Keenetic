@@ -25,6 +25,25 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap
 (чужие `bin/susanin-agent.*` можно удалить — нужный `install.sh` выбирает сам).
 Xray в архиве нет: `sh bootstrap.sh --with-xray --yes`. Архив в RAM — `--tmp /tmp`.
 
+## `opkg: Not downgrading package susanin-keenetic ... 0.4.0.RC1.Hotfix to 0.4.0`
+
+Так opkg сравнивает версии: `0.4.0` для него **меньше** `0.4.0.RC1.Hotfix`
+(короткая строка идёт раньше суффикса), поэтому установка `0.4.0` поверх
+`0.4.0.RC1.Hotfix` считается понижением и блокируется.
+
+Варианты:
+
+```sh
+# поставить пакет с явным разрешением понижения
+opkg install --force-downgrade /opt/tmp/susanin-keenetic_0.4.0_<arch>.ipk
+
+# либо обновиться архивом — там проверки версии нет
+sh /opt/susanin/tools/susanin.sh update v0.4.0
+```
+
+Свежий `install.sh` из `main` уже добавляет `--force-downgrade` сам, так что
+`wget -qO- .../main/install.sh | sh -s -- --ipk` тоже сработает.
+
 ## Сайт «грузится бесконечно» (tproxy + HTTP/3)
 
 Спиннер на конкретной странице, хотя `ping`/`curl` работают и сайт может вообще

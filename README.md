@@ -524,6 +524,12 @@ susanin version && susanin status && susanin diagnose
 конфиг создаётся из `config.example.conf` — проверьте в нём `egress_interface` и
 `lan_interfaces`. Обновление = `opkg install` нового `.ipk`; удаление:
 
+> Если стоит `0.4.0.RC1.Hotfix`, opkg считает `0.4.0` **понижением**
+> (`0.4.0` < `0.4.0.RC1.Hotfix`) и откажется ставить. Свежий `install.sh`
+> добавляет `--force-downgrade` сам; вручную —
+> `opkg install --force-downgrade susanin-keenetic_0.4.0_<arch>.ipk`.
+> Альтернатива без opkg: `sh /opt/susanin/tools/susanin.sh update v0.4.0`.
+
 ```sh
 opkg remove susanin-keenetic      # служба, init и правила снимаются; данные остаются
 rm -rf /opt/susanin               # если нужно удалить и конфиг/списки/состояние

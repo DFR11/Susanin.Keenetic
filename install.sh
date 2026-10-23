@@ -450,13 +450,20 @@ if [ "$USE_IPK" -eq 1 ]; then
         FORCE=1
     fi
     if [ "$FORCE" -eq 1 ]; then
-        say "opkg install --force-reinstall $IPK_FILE"
-        opkg install --force-reinstall "$IPK_FILE" \
+        say "opkg install --force-reinstall --force-downgrade $IPK_FILE"
+        opkg install --force-reinstall --force-downgrade "$IPK_FILE" \
             || die "opkg install не удался"
     else
-        say "opkg install $IPK_FILE"
-        opkg install "$IPK_FILE" \
+        # Версии: opkg считает 0.4.0 МЕНЬШЕ 0.4.0.RC1.Hotfix (короткая строка
+        # идёт раньше суффикса) и отказывается ставить: «Not downgrading
+        # package susanin-keenetic ...». Поэтому явно разрешаем понижение —
+        # для обычного обновления флаг безвреден.
+        say "opkg install --force-downgrade $IPK_FILE"
+        opkg install --force-downgrade "$IPK_FILE" \
             || die "opkg install не удался (если пакет уже стоит: добавьте --force)
+     «Not downgrading» = установленная версия нумерно выше (например,
+     0.4.0.RC1.Hotfix): поставьте вручную:
+       opkg install --force-downgrade $IPK_FILE
      «Malformed package file» = файл пакета повреждён/недокачан: проверьте
      sha256sum $IPK_FILE и df -h /opt, затем повторите."
     fi
