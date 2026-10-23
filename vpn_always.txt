@@ -13,6 +13,7 @@
 # изменения подхватываются на лету.
 
 4pda.to
+4pda.ws
 account-tiktok.com
 addlive.io
 akamai.net
@@ -20,6 +21,7 @@ akamaized.net
 anthropic.com
 app.kilo.ai
 atomile.com
+auth.openai.com
 auth0.com
 byteimg.com
 byteoversea.com
@@ -96,6 +98,7 @@ gpt3-openai.com
 grok.com
 gstatic.com
 gvt1.com
+habr.com
 hetzner.com
 i.ytimg.com
 i9.ytimg.com
