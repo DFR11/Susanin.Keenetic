@@ -17,8 +17,8 @@
 - Бинарь Xray на роутере: `/opt/sbin/xray`. В архив он **не входит** (каждый
   ~29 МБ, нужен только для этого режима): поставить его можно установщиком —
   `sh bootstrap.sh --with-xray --yes`, либо скачать вручную `xray/xray.mipsel`
-  или `xray/xray.aarch64` (версия 1.8.24) из каталога `develop/xray/`
-  репозитория (это каталог, не ветка) и сверить с `xray/SHA256SUMS`.
+  или `xray/xray.aarch64` (версия 1.8.24) из каталога `xray/` в репозитории
+  и сверить с `xray/SHA256SUMS`.
 - Конфиг клиента: `/opt/susanin/etc/xray-tproxy.json`
   (образец — `xray-tproxy.json.example`).
 - Рабочий Xray-сервер VLESS+REALITY (на VPS). На роутере под него ничего
@@ -63,14 +63,13 @@ echo | openssl s_client -connect <IP_сервера>:443 -servername example.org
    ```sh
    sh bootstrap.sh --with-xray --yes    # скачает Xray под вашу архитектуру
    ```
-   Вручную — скачать из репозитория и проверить сумму (ветка `main`, каталог
-   `develop/xray/`):
+   Вручную — скачать из репозитория и проверить сумму (каталог `xray/`):
    ```sh
    wget -O /opt/sbin/xray \
-     https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/develop/xray/xray.mipsel
-   # aarch64: .../main/develop/xray/xray.aarch64
+     https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/xray/xray.mipsel
+   # aarch64: .../main/xray/xray.aarch64
    chmod +x /opt/sbin/xray
-   sha256sum /opt/sbin/xray             # сверить с develop/xray/SHA256SUMS
+   sha256sum /opt/sbin/xray             # сверить с xray/SHA256SUMS
    ```
 2. Положить конфиг и подставить свои данные:
    ```sh

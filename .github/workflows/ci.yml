@@ -54,12 +54,11 @@ jobs:
           tar -tzf dist-ci/*.ipk | grep -q './debian-binary'
           tar -tzf dist-ci/*.ipk | grep -q './data.tar.gz'
 
-      - name: Единый список поставки (.ipk / develop / манифест)
+      - name: Единый список поставки (.ipk / манифест)
         run: |
           set -e
           sh tools/check-shipping.sh
           sh tools/check-shipping.sh --ipk "$(ls dist-ci/*.ipk | head -1)"
-          sh tools/check-shipping.sh --develop develop
 
       - name: Пробная сборка tar-архива (CI-раскладка из манифеста)
         run: |

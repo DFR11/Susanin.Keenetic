@@ -23,7 +23,7 @@
 #     /opt/sbin/xray, сверяя sha256 по xray/SHA256SUMS из пакета;
 #   * запускает install.sh из пакета и передаёт ему ваши флаги.
 #
-# Быстрый старт (тестовая ветка develop), без сохранения файла:
+# Быстрый старт (последний релиз), без сохранения файла:
 #   cd /opt/tmp
 #   wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh | sh -s -- --yes
 #
@@ -48,10 +48,8 @@
 set -eu
 
 REPO="R17a/Susanin.Keenetic"
-BRANCH="develop"
 CHANNEL="stable"
 VERSION="latest"
-DEV_FILE="susanin-keenetic-0.4.0-dev.tar.gz"
 URL=""
 FILE=""
 ARCH=""
@@ -82,13 +80,10 @@ usage() {
 Использование: sh bootstrap.sh [опции своего установщика] [опции install.sh]
 
 Опции установщика:
-  --channel dev|stable   stable (по умолчанию) — последний GitHub Release (архив
-                         под вашу архитектуру); dev — универсальный архив из
-                         ветки develop (для тестовых сборок).
-  --version latest|vX.Y.Z  версия для --channel stable.
-  --branch ВЕТКА         ветка GitHub для --channel dev (по умолчанию develop).
-  --dev-file ИМЯ.tar.gz  имя файла dev-архива. Обычно не нужно: имя одно и то же
-                         для всех dev-сборок — susanin-keenetic-0.4.0-dev.tar.gz.
+  --channel stable       только stable: последний GitHub Release (архив под вашу
+                         архитектуру). dev-канал отключён (dev-архив не
+                         публикуется).
+  --version latest|vX.Y.Z  версия релиза.
   --url URL              скачать архив по своему адресу.
   --file ПУТЬ            использовать уже скачанный архив (без интернета).
   --arch ARCH            mipsel|mips|aarch64|armv7|x86_64 (иначе — автоопределение).
@@ -134,8 +129,6 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --channel) need_val $# "$1"; CHANNEL="$2"; shift ;;
         --version) need_val $# "$1"; VERSION="$2"; INSTALL_ARGS="$INSTALL_ARGS --version $2"; shift ;;
-        --branch) need_val $# "$1"; BRANCH="$2"; shift ;;
-        --dev-file) need_val $# "$1"; DEV_FILE="$2"; shift ;;
         --url) need_val $# "$1"; URL="$2"; shift ;;
         --file) need_val $# "$1"; FILE="$2"; shift ;;
         --arch) need_val $# "$1"; ARCH="$2"; INSTALL_ARGS="$INSTALL_ARGS --arch $2"; shift ;;
@@ -162,15 +155,15 @@ while [ $# -gt 0 ]; do
 done
 
 case "$CHANNEL" in
-    dev|develop) CHANNEL=dev ;;
+    dev|develop)
+        die "dev-канал отключён: dev-архив больше не публикуется.
+     используйте --channel stable (последний релиз) или --version vX.Y.Z" ;;
     stable|release) CHANNEL=stable ;;
-    *) die "неверный --channel: $CHANNEL (dev|stable)" ;;
+    *) die "неверный --channel: $CHANNEL (только stable)" ;;
 esac
 
-# Xray берём из стабильной ветки, если ставим релиз; из BRANCH — только для
-# dev-канала. Иначе стабильная установка тянула бы бинарник из develop.
-XRAY_BRANCH="$BRANCH"
-[ "$CHANNEL" = stable ] && XRAY_BRANCH=main
+# Xray берём из стабильной ветки main.
+XRAY_BRANCH=main
 
 # --- определение платформы ---------------------------------------------------
 # Endianness по ELF-заголовку: байт 5 (EI_DATA): 1 — little, 2 — big.
@@ -388,28 +381,18 @@ download_archive() {
         fetch "$URL" "$WORK/pkg.tar.gz" || die "не удалось скачать архив: $URL"
         return 0
     fi
-    if [ "$CHANNEL" = stable ]; then
-        if [ "$VERSION" = latest ]; then
-            _base="https://github.com/$REPO/releases/latest/download"
-        else
-            _base="https://github.com/$REPO/releases/download/$VERSION"
-        fi
-        _asset="susanin-keenetic-deploy-$ARCH.tar.gz"
-        say "скачиваю: $_base/$_asset"
-        fetch "$_base/$_asset" "$WORK/pkg.tar.gz" \
-            || die "не удалось скачать $_asset из $_base
-     подсказка: opkg update && opkg install ca-certificates wget-ssl
-     или укажите версию: --version vX.Y.Z"
-        return 0
+    if [ "$VERSION" = latest ]; then
+        _base="https://github.com/$REPO/releases/latest/download"
+    else
+        _base="https://github.com/$REPO/releases/download/$VERSION"
     fi
-    # Имя dev-архива специально всегда одно и то же (susanin-keenetic-0.4.0-dev.tar.gz):
-    # его не нужно переписывать в скриптах и инструкциях при смене сборки.
-    _base="https://raw.githubusercontent.com/$REPO/$BRANCH/develop"
-    say "скачиваю: $_base/$DEV_FILE"
-    fetch "$_base/$DEV_FILE" "$WORK/pkg.tar.gz" || die "не удалось скачать $_base/$DEV_FILE
+    _asset="susanin-keenetic-deploy-$ARCH.tar.gz"
+    say "скачиваю: $_base/$_asset"
+    fetch "$_base/$_asset" "$WORK/pkg.tar.gz" \
+        || die "не удалось скачать $_asset из $_base
      подсказка: opkg update && opkg install ca-certificates wget-ssl
-     проверьте ветку (--branch) и имя файла (--dev-file)
-     или укажите свой адрес архива: --url <адрес>"
+     или укажите версию: --version vX.Y.Z
+     или свой адрес архива: --url <адрес>"
 }
 
 # --- распаковка --------------------------------------------------------------
@@ -716,7 +699,7 @@ download_xray() {
         if [ -z "$_dir" ] || [ ! -d "$_dir" ]; then _dir=/tmp; fi
         _file="$_dir/xray.$XRAY_ARCH"
         _tmp=1
-        _url="https://raw.githubusercontent.com/$REPO/$XRAY_BRANCH/develop/xray/xray.$XRAY_ARCH"
+        _url="https://raw.githubusercontent.com/$REPO/$XRAY_BRANCH/xray/xray.$XRAY_ARCH"
         say "скачиваю Xray ($XRAY_ARCH): $_url"
         if ! fetch "$_url" "$_file"; then
             warn "не удалось скачать Xray — скачайте вручную и положите в /opt/sbin/xray
@@ -798,7 +781,7 @@ else
         case "${_sz:-}" in ''|*[!0-9]*) _sz=0 ;; esac
         if [ "$_sz" -lt 20000 ]; then
             die "скачанный файл слишком мал ($_sz байт) — похоже, это не архив
-     подсказка: проверьте адрес/ветку: --url, --branch, --dev-file"
+     подсказка: проверьте адрес архива: --url или --version"
         fi
     fi
     prepare_package "$ARC"

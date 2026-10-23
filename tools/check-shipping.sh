@@ -4,30 +4,23 @@
 #   1) все файлы из манифеста существуют в репозитории;
 #   2) каждый файл из tools/ — либо в манифесте, либо в packaging/dev-only.txt;
 #   2b) каждый файл из init/entware/ — тоже;
-#   3) если задан .ipk — в нём есть всё из манифеста и нет dev-only-скриптов;
-#   4) если задан каталог develop — там есть всё из манифеста (в его раскладке).
+#   3) если задан .ipk — в нём есть всё из манифеста и нет dev-only-скриптов.
 #
 # Usage:
 #   sh tools/check-shipping.sh                 # только (1) и (2)
 #   sh tools/check-shipping.sh --ipk dist/x.ipk
-#   sh tools/check-shipping.sh --develop develop
-#   sh tools/check-shipping.sh --all           # + dist/*.ipk и develop
 set -u
 
 SRC=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 MAN="$SRC/packaging/manifest.txt"
 DEVONLY="$SRC/packaging/dev-only.txt"
 IPK=""
-DEV=""
 CHK_IPK=0
-CHK_DEV=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --ipk) IPK="$2"; CHK_IPK=1; shift 2 ;;
-        --develop) DEV="$2"; CHK_DEV=1; shift 2 ;;
-        --all) CHK_IPK=1; CHK_DEV=1; shift ;;
-        -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "check-shipping: неизвестный параметр: $1" >&2; exit 2 ;;
     esac
 done
@@ -113,30 +106,6 @@ if [ "$CHK_IPK" = 1 ]; then
         fi
         note "проверен $(basename "$IPK")"
         rm -rf "$T"
-    fi
-fi
-
-echo "== 4. develop/ =="
-if [ "$CHK_DEV" = 1 ]; then
-    [ -n "$DEV" ] || DEV="$SRC/develop"
-    if [ ! -d "$DEV" ]; then
-        fail "нет каталога $DEV"
-    else
-        while read -r cls src; do
-            [ -n "${src:-}" ] || continue
-            case "$cls" in
-                tool)  p="$DEV/tools/$(basename "$src")" ;;
-                init)  p="$DEV/init/$(basename "$src")" ;;
-                doc)   p="$DEV/docs/$(basename "$src")" ;;
-                share) p="$DEV/etc/$(basename "$src")" ;;
-                cfg)   p="$DEV/etc/config.example.conf" ;;
-                www)   p="$DEV/www/index.html" ;;
-                root)  p="$DEV/$(basename "$src")" ;;
-                *) continue ;;
-            esac
-            [ -e "$p" ] || fail "в develop нет $(printf '%s' "$p" | sed "s|$DEV/||")"
-        done < "$LIST"
-        note "проверен $DEV"
     fi
 fi
 

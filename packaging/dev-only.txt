@@ -7,9 +7,8 @@
 tools/wsl-build.sh          — кросс-сборка в WSL (инструмент разработчика)
 tools/build-mips.sh         — сборка под MIPS (инструмент разработчика)
 tools/make-ipk.sh           — сборка .ipk-пакетов (инструмент упаковки)
-tools/repack-develop.sh     — перепаковка develop-дистрибутива (инструмент упаковки)
 tools/stage-release.sh      — раскладка tar-архива релиза по манифесту
-tools/check-shipping.sh     — сверка манифеста с .ipk/develop
+tools/check-shipping.sh     — сверка манифеста с .ipk
 
 # --- внешний наблюдатель "интерфейс -> Xray" (штатный путь — кандидат tproxy) ---
 tools/egress-failover.sh    — два механизма одновременно конфликтуют; в движке

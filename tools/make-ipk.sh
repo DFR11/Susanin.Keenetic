@@ -24,8 +24,6 @@ VER=""
 ONE=""
 ONE_BIN=""
 ARCHS=""
-PUBLISH=0
-DEV_IPK="$SRC/develop/ipk"
 
 die() { echo "make-ipk: $*" >&2; exit 1; }
 
@@ -35,12 +33,8 @@ while [ $# -gt 0 ]; do
         --out)     OUT="$2"; shift 2 ;;
         --version) VER="$2"; shift 2 ;;
         --one)     ONE="$2"; ONE_BIN="${3:-}"; shift 2; [ -n "$ONE_BIN" ] && shift ;;
-        # Публикация в репозиторий: пакеты кладутся в develop/ipk/ вместе с
-        # SHA256SUMS — по ним install.sh --ipk ставит пакет БЕЗ релиза
-        # (так же, как bootstrap.sh берёт dev-архив из ветки).
-        --publish-develop) PUBLISH=1; shift ;;
         -h|--help)
-            sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+            sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         -*) die "неизвестный параметр: $1" ;;
         *)  ARCHS="$ARCHS $1"; shift ;;
     esac
@@ -89,7 +83,7 @@ build_one() { # build_one <target-arch> <binary>
     cp "$_bin" "$_data/opt/susanin/bin/susanin-agent"
     chmod 755 "$_data/opt/susanin/bin/susanin-agent"
 
-    # Единый список поставки (тот же, что у CI-архива и develop): packaging/manifest.txt.
+    # Единый список поставки (тот же, что у CI-архива): packaging/manifest.txt.
     # Читаем через redirect (не pipe): иначе ошибка ниже не выйдет из функции.
     # Отсутствующий в манифесте файл — это ОШИБКА, а не «молча пропустить».
     while read -r _cls _src; do
@@ -164,13 +158,3 @@ done
 # SHA256SUMS рядом с пакетами (имена без каталогов, как в релизе).
 ( cd "$OUT" && sha256sum ./*.ipk > SHA256SUMS 2>/dev/null ) || true
 echo "make-ipk: готово, $_n пакет(ов) в $OUT (+SHA256SUMS)"
-
-# Публикация в репозиторий (develop/ipk): чтобы `install.sh --ipk` работал без
-# релиза — по этим файлам установщик скачает пакет из ветки (как bootstrap.sh).
-if [ "$PUBLISH" -eq 1 ]; then
-    mkdir -p "$DEV_IPK"
-    rm -f "$DEV_IPK"/*.ipk "$DEV_IPK/SHA256SUMS" 2>/dev/null || true
-    cp -f "$OUT"/*.ipk "$DEV_IPK/"
-    ( cd "$DEV_IPK" && sha256sum ./*.ipk > SHA256SUMS )
-    echo "make-ipk: опубликовано в ${DEV_IPK#"$SRC"/} ($(ls "$DEV_IPK"/*.ipk | wc -l) пакет(ов) + SHA256SUMS)"
-fi

@@ -1,8 +1,7 @@
 # Единый список того, что ПОСТАВЛЯЕТСЯ (0.4.0).
 #
 # Читают: tools/make-ipk.sh (.ipk), tools/stage-release.sh (CI tar-архив),
-# tools/repack-develop.sh и tools/check-shipping.sh (проверка, что ничего не
-# забыто и лишнего не уехало).
+# tools/check-shipping.sh (проверка, что ничего не забыто и лишнего не уехало).
 #
 # ВАЖНО: сюда попадают только файлы, которые есть в git. Приватные рабочие
 # документы (/TESTBUILD.md, /STATUS.md, /PLAN.md, docs/RECON.md) в манифест

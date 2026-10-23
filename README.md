@@ -463,11 +463,9 @@ opkg update && opkg install ca-certificates wget-ssl
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
 ```
 
-> Пакет установщик берёт из последнего релиза (`v0.4.0`), сверяет SHA256 по
-> `SHA256SUMS` из релиза. Для dev-сборок, пока релиза нет, он умеет брать `.ipk`
-> из каталога `develop/ipk/` в ветке `develop`. Ответ
-> `ERROR: unknown arg: --ipk` означает, что взят старый скрипт (кэш или ветка
-> до 0.4.0).
+> Пакет установщик берёт из последнего релиза (`v0.4.0`) и сверяет SHA256 по
+> `SHA256SUMS` из релиза. Ответ `ERROR: unknown arg: --ipk` означает, что взят
+> старый скрипт (кэш или ветка до 0.4.0).
 
 Что делает `--ipk`: определяет архитектуру Entware (`opkg print-architecture`,
 нормализация `mipsel-3.4` → `mipsel` и т.д.), скачивает
@@ -591,8 +589,8 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap
 # tar-архив + Xray:  sh -s -- --yes --with-xray
 ```
 По умолчанию берётся **последний релиз** (`--channel stable`), сейчас это
-`v0.4.0`. Для тестовой сборки из ветки: `--channel dev --branch develop`;
-конкретную версию задаёт `--version v0.4.0`.
+`v0.4.0`; конкретную версию задаёт `--version v0.4.0`. dev-канал отключён —
+тестовые архивы больше не публикуются.
 
 Флаги: `--channel stable|dev`, `--version`, `--file`, `--url`, `--check`,
 `--dry-run`, `--ipk`, `--with-xray`, `--verify`, `--tmp DIR`; остальные

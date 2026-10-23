@@ -13,8 +13,8 @@
 set -eu
 
 REPO="R17a/Susanin.Keenetic"
-# Ветка, откуда берутся Xray и (fallback) .ipk. Стабильные установки — main;
-# для тестов dev-сборки: SUSANIN_BRANCH=develop sh install.sh ...
+# Ветка, откуда берётся Xray (xray/). Обычно main; переопределяется
+# SUSANIN_BRANCH для своих форков/зеркал.
 BRANCH="${SUSANIN_BRANCH:-main}"
 PREFIX=/opt/susanin
 INITD=/opt/etc/init.d
@@ -53,7 +53,7 @@ pick_fetch() {
 # --- VLESS/REALITY: Xray + шаблон tproxy-конфига ------------------------------
 # Вызывается по --with-xray-tproxy (или bootstrap --with-xray) в ЛЮБОМ режиме
 # установки (tar-архив и .ipk). Бинарников Xray нет в поставке, поэтому при
-# отсутствии /opt/sbin/xray скачиваем нужный из репозитория (develop/xray/) и
+# отсутствии /opt/sbin/xray скачиваем нужный из репозитория (xray/) и
 # сверяем sha256 по xray/SHA256SUMS. Если сети нет — просто подсказываем.
 xray_setup() {
     [ "$XRAYTUN" -eq 1 ] || return 0
@@ -71,7 +71,7 @@ xray_setup() {
         else
             pick_fetch
             mkdir -p /opt/sbin /opt/tmp 2>/dev/null || true
-            _xbase="https://raw.githubusercontent.com/$REPO/$BRANCH/develop/xray"
+            _xbase="https://raw.githubusercontent.com/$REPO/$BRANCH/xray"
             _xfile="/opt/tmp/xray.$_xa"
             say "скачиваю Xray ($_xa): $_xbase/xray.$_xa"
             if fetch "$_xbase/xray.$_xa" "$_xfile"; then
@@ -386,28 +386,11 @@ if [ "$USE_IPK" -eq 1 ]; then
                 [ "$VERSION" != latest ] && say "в релизе $VERSION нет пакета для $OA"
             fi
         fi
-        # (2) Репозиторий: develop/ipk/ (как bootstrap.sh — работает БЕЗ релиза).
-        if [ -z "$IPK_FILE" ]; then
-            _rb="${SUSANIN_IPK_REPO:-https://raw.githubusercontent.com/$REPO/$BRANCH/develop/ipk}"
-            say "в релизе нет .ipk — беру из репозитория: $_rb/"
-            if fetch "$_rb/SHA256SUMS" "$_sums_dir/SHA256SUMS" 2>/dev/null; then
-                _name=$(awk -v a="_${OA}.ipk" 'index($2,a)>0 {print $2; exit}' "$_sums_dir/SHA256SUMS" \
-                        | sed 's|.*/||')
-                if [ -n "$_name" ] && [ "$VERSION" != latest ]; then
-                    case "$_name" in
-                        *"${VERSION#v}"*) ;;
-                        *) _name="" ;;
-                    esac
-                fi
-                if [ -n "$_name" ]; then
-                    say "ipk (репозиторий): $_name"
-                    fetch "$_rb/$_name" "/opt/tmp/$_name" && IPK_FILE="/opt/tmp/$_name"
-                fi
-            fi
-        fi
+        # (2) Резервного источника больше нет: dev-каталог develop/ipk/ удалён,
+        # .ipk публикуются только в Release.
         if [ -z "$IPK_FILE" ]; then
             rm -f "$_sums_dir/SHA256SUMS"
-            die "нет .ipk для $OA ни в релизе, ни в репозитории (develop/ipk)
+            die "нет .ipk для $OA в релизе
      что делать:
        * поставить tar-архивом:               sh install.sh --yes
        * поставить свой файл:                 sh install.sh --ipk-file /opt/tmp/<файл>.ipk
