@@ -499,8 +499,7 @@ if [ "$OC_SRV" = "1" ]; then
             rec "В цепочке SUSANIN нет правил с -i oc* — трафик клиентов OpenConnect проходит мимо (счётчики не растут). Проверьте lan_interfaces и перезапустите агент."
         fi
         # T3: клиент шлёт DNS на 8.8.8.8? Тогда нужен dns_hijack, иначе NXDOMAIN.
-        _dh=$(iptables -t nat -S PREROUTING 2>/dev/null | \
-              grep -- '--dport 53 -j DNAT' | grep -c -- '! -d 10.0.0.0/8' || true)
+        _dh=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -cF -- 'susanin-dns' || true)
         echo "DNAT 53 для клиентов (dns_hijack): наших правил ${_dh:-0}"
         if [ "$(cfg dns_hijack)" = "1" ] && [ "${_dh:-0}" -eq 0 ]; then
             rec "dns_hijack=1, но правил DNAT 53 нет — выполните 'susanin.sh reload' (или restart). Правило ставится шаблоном oc+ заранее и работает, когда клиент подключится позже."

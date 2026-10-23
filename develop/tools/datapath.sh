@@ -609,14 +609,16 @@ _dns_hijack_dest() {
 # интерфейса НЕ проверяем: клиент OpenConnect создаёт ocN только в момент
 # подключения, а `-i oc+` — валидный шаблон и без единого oc*. Правило ставится
 # заранее и начинает работать, когда клиент подключится.
+# Сравниваем по префиксу имени, а не по подстроке: `vpn_ocean0` — не `oc*`.
 _dns_hijack_ifaces() {
     _out=""
     _want_wdtt=0
-    for _i in $LAN; do
+    for _i in $(printf '%s' "$LAN" | tr ',' ' '); do
         case "$_i" in
-            oc*)   _add=oc+ ;;
-            wdtt*) _add=$_i; _want_wdtt=1 ;;
-            *)     continue ;;
+            oc|oc+|oc[0-9]*)           _add=oc+ ;;
+            wdtt0|wdtt+|wdtt[0-9]*)    _add=$_i; _want_wdtt=1 ;;
+            wdttraw0|wdttraw[0-9]*)    _add=$_i; _want_wdtt=1 ;;
+            *)                         continue ;;
         esac
         case " $_out " in
             *" $_add "*) ;;
@@ -635,22 +637,16 @@ _dns_hijack_ifaces() {
     printf '%s' "$_out" | sed 's/^ *//'
 }
 
+# Метка наших правил: по ней ищем/удаляем и проверяем готовность датаплейна.
+# iptables не допускает больше одного `-d` в правиле («multiple -d flags not
+# allowed»), поэтому приватные сети исключаем отдельными RETURN-правилами ДО
+# DNAT, а не тремя `! -d` в одном правиле.
+DNS_HIJACK_COMMENT=susanin-dns
+DNS_HIJACK_PRIVATE="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
+
 dns_hijack_clean() {
-    _srv=$(_dns_hijack_ifaces)
-    "ipt" -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53 -j DNAT' | \
+    "ipt" -t nat -S PREROUTING 2>/dev/null | grep -F -- "$DNS_HIJACK_COMMENT" | \
         while IFS= read -r _line; do
-            _del=0
-            # Удаляем ТОЛЬКО наши правила: серверный интерфейс + исключение
-            # приватных сетей (так их ставит dns_hijack_rules). Чужой DNAT 53,
-            # даже ведущий на тот же резолвер, не трогаем.
-            case "$_line" in
-                *"! -d 10.0.0.0/8"*)
-                    for _i in $_srv; do
-                        case "$_line" in *"-i $_i "*) _del=1 ;; esac
-                    done
-                    ;;
-            esac
-            [ "$_del" = "1" ] || continue
             _spec=$(printf '%s' "$_line" | sed 's/^-A PREROUTING //')
             "ipt" -t nat -D PREROUTING $_spec >/dev/null 2>&1 || true
         done || true
@@ -666,22 +662,33 @@ dns_hijack_rules() {
     fi
     _ifaces=$(_dns_hijack_ifaces)
     if [ -z "$_ifaces" ]; then
-        say "dns_hijack=1, но интерфейсов серверных VPN (oc+/wdtt+) нет — пропускаю"
+        say "dns_hijack=1, но в lan_interfaces нет oc+/wdtt+ — пропускаю"
         return 0
     fi
     _n=0
     for _i in $_ifaces; do
         for _p in udp tcp; do
-            if "ipt" -t nat -I PREROUTING 1 -i "$_i" -p "$_p" --dport 53 \
-                   ! -d 10.0.0.0/8 ! -d 172.16.0.0/12 ! -d 192.168.0.0/16 \
+            # Приватные адреса назначения (свой DNS/AdGuard в LAN) не трогаем:
+            # RETURN срабатывает раньше DNAT.
+            for _net in $DNS_HIJACK_PRIVATE; do
+                "ipt" -t nat -A PREROUTING -i "$_i" -p "$_p" --dport 53 \
+                    -d "$_net" -m comment --comment "$DNS_HIJACK_COMMENT" \
+                    -j RETURN >/dev/null 2>&1 || true
+            done
+            if "ipt" -t nat -A PREROUTING -i "$_i" -p "$_p" --dport 53 \
+                   -m comment --comment "$DNS_HIJACK_COMMENT" \
                    -j DNAT --to-destination "$_dst" 2>/dev/null; then
                 _n=$((_n + 1))
             else
-                say "dns_hijack: не удалось добавить $_p/53 для $_i"
+                say "dns_hijack: не удалось добавить $_p/53 для $_i (нет xt_comment?)"
             fi
         done
     done
-    say "dns_hijack: DNS клиентов ($_ifaces) -> $_dst (правил: $_n)"
+    if [ "$_n" -eq 0 ]; then
+        say "dns_hijack=1, но правила не добавлены — фича не работает (проверьте xt_comment/nat)"
+        return 0
+    fi
+    say "dns_hijack: DNS клиентов ($_ifaces) -> $_dst (правил DNAT: $_n)"
 }
 
 command_up() {
@@ -766,9 +773,8 @@ command_status() {
         done
     fi
     echo "forward_accept: rules=$_fa/$_fan (метки ok/test/профили — нужны клиентам серверных VPN: oc+/wdtt+)"
-    # Считаем только НАШИ правила (с исключением приватных сетей), а не любой DNAT 53.
-    _dh=$("ipt" -t nat -S PREROUTING 2>/dev/null | \
-          grep -- '--dport 53 -j DNAT' | grep -c -- '! -d 10.0.0.0/8' || true)
+    # Считаем только НАШИ правила (по comment-метке), а не любой DNAT 53.
+    _dh=$("ipt" -t nat -S PREROUTING 2>/dev/null | grep -cF -- "$DNS_HIJACK_COMMENT" || true)
     if [ "$DNS_HIJACK" = "1" ]; then
         echo "dns_hijack: on (серверные VPN: $(_dns_hijack_ifaces) -> $(_dns_hijack_dest); наших правил=$_dh)"
     elif [ "${_dh:-0}" -gt 0 ] 2>/dev/null; then

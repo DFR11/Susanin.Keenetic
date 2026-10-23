@@ -310,6 +310,34 @@ static int egress_any_present(const susanin_config *c)
     return 0;
 }
 
+/* Есть ли в списке интерфейсов запись с данным префиксом и корректным хвостом
+ * (`oc`, `oc+`, `oc0`…; `wdtt`, `wdtt0`…). Подстрочное совпадение вроде
+ * `vpn_ocean0` не считается. */
+static int iface_prefix_in_list(const char *list, const char *pfx)
+{
+    size_t n = strlen(pfx);
+    const char *p = list;
+    while (p && *p) {
+        const char *e;
+        char c;
+        while (*p == ',' || *p == ' ' || *p == '\t')
+            p++;
+        if (!*p)
+            break;
+        e = p;
+        while (*e && *e != ',' && *e != ' ' && *e != '\t')
+            e++;
+        if ((size_t)(e - p) >= n && !strncmp(p, pfx, n)) {
+            c = p[n];
+            if (c == '+' || c == '\0' || c == ',' || c == ' ' ||
+                c == '\t' || (c >= '0' && c <= '9'))
+                return 1;
+        }
+        p = e;
+    }
+    return 0;
+}
+
 /* Готов ли датаплейн? Проверяем ФАКТИЧЕСКИЙ режим (g_tproxy_mode), а не
  * cfg->egress_type: после переключения кандидата конфиг и ядро могут
  * расходиться, и сравнение с конфигом давало вечный false → цикл
@@ -333,16 +361,17 @@ int backend_ready(const susanin_config *c)
         return 0;
 
     /* T3: dns_hijack ставит DNAT 53 заранее (в т.ч. шаблоном oc+ без живого
-     * клиента). Если правила пропали (NDM/смена режима), их надо вернуть —
-     * иначе фича «включается» только после ручного restart. */
+     * клиента) и помечает правила comment-меткой susanin-dns. Если правила
+     * пропали (NDM/смена режима), их надо вернуть — иначе фича «включается»
+     * только после ручного restart. Чужой DNAT 53 «готовым» не считается. */
     if (c->dns_hijack &&
-        (strstr(c->lan_interfaces, "oc") != NULL ||
-         strstr(c->lan_interfaces, "wdtt") != NULL)) {
+        (iface_prefix_in_list(c->lan_interfaces, "oc") ||
+         iface_prefix_in_list(c->lan_interfaces, "wdtt"))) {
         char *na[6];
         na[0] = (char *)tool_iptables();
         na[1] = "-t"; na[2] = "nat"; na[3] = "-S"; na[4] = "PREROUTING"; na[5] = NULL;
         if (run_capture_argv(na, out, sizeof(out)) != 0 ||
-            !strstr(out, "--dport 53 -j DNAT"))
+            !strstr(out, "susanin-dns"))
             return 0;
     }
 

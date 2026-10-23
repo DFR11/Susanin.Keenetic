@@ -13,11 +13,14 @@
 # 1. Нужные пакеты Entware
 opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
 
-# 2. Установка (одной строкой)
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh | sh
+# 2. Установка пакетом .ipk (рекомендуется): архитектура и SHA256 — автоматически
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
+
+# либо из tar-архива:
+# wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
 
 # 3. Проверка
-sh /opt/susanin/tools/susanin.sh status
+susanin version && susanin status
 ```
 
 Установщик сам определит архитектуру, LAN и VPN, спросит подтверждение и
@@ -25,10 +28,11 @@ sh /opt/susanin/tools/susanin.sh status
 обновлении **не перезаписываются**, но списки **могут дополняться** новыми
 записями из сборки (merge; существующие строки не удаляются).
 
-Для старых BusyBox (где `tar` не знает `--exclude`) и установки пакетом:
+Для старых BusyBox (где `tar` не знает `--exclude`) — `bootstrap.sh`:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+cd /opt/tmp
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh | sh -s -- --yes
 # пакетом .ipk:  sh -s -- --yes --ipk
 ```
 
@@ -163,32 +167,27 @@ CIDR; `#` — комментарий). Адрес обрабатывается �
 Управление: `sh /opt/susanin/tools/profiles.sh {up|down|status}`. Профили
 поднимаются при старте демона; если не заданы — ничего не меняется.
 
-**Что нужно знать, чтобы профиль заработал** (каждый пункт — реальная причина
-«не работает» с форумов и стендов):
+**Что нужно знать, чтобы профиль заработал** (актуально для 0.4.0):
 
-1. **Список должен заканчиваться переводом строки.** Файл из одной строки без
-   `\n` в конце в сборках до 0.4.0-dev8 читается как пустой (`entries=0`,
-   профиль никого не метит). После правки списка — `profiles.sh refresh`.
-2. **`reload` профили не поднимает.** `SIGHUP` пересобирает только основной
-   датаплейн. После правки `susanin.conf` или сохранения в панели выполните
-   `sh /opt/susanin/tools/profiles.sh up` (или `S94susanin restart`).
-3. **`profileN_egress` — точное имя интерфейса** (`ip link show`, у Keenetic это
+1. **`reload` применяет профили.** После правки `susanin.conf` или сохранения в
+   панели достаточно `susanin.sh reload`; `profiles.sh up` остался для ручного
+   применения.
+2. **`profileN_egress` — точное имя интерфейса** (`ip link show`, у Keenetic это
    `nwg0`, `nwg1`, … по порядку создания подключений). Если интерфейса нет,
    профиль пропускается, в логе — `[profiles] <имя>: egress … не найден`.
-4. **Адреса из списка не должны быть заняты основной схемой.** Профиль забирает
-   только трафик с нулевой меткой: если адрес уже в `vpn_always` или выучен
-   (`susanin_ok_*`), он уйдёт в основной туннель, а не в профиль. Подробно —
-   [TROUBLESHOOTING.md](TROUBLESHOOTING.md), раздел про профили.
-5. **Туннель профиля с MTU меньше 1500 требует `mss_clamp`.** Иначе страницы
-   будут открываться, но очень медленно. Ставьте `mss_clamp=pmtu` и
-   `mss_clamp_lan=1`. Значение не должно превышать `MTU − 40` (для MTU 1200 —
-   1160, для 1420 — 1380).
-6. **Для сервисов с ротацией адресов** (Google/Gemini, CDN) список доменов
+3. **Профиль приоритетнее основной схемы.** Его цепочка стоит первой в
+   PREROUTING, основная цепочка делает `RETURN` для адресов профиля, а метка
+   дублируется в `CONNMARK` — адрес, выученный ранее, уйдёт в профиль.
+4. **Туннель профиля с MTU меньше 1500 требует `mss_clamp`.** Иначе страницы
+   будут открываться, но очень медленно. Ставьте `mss_clamp=pmtu` (или число не
+   больше `MTU − 40`: для 1200 — 1160, для 1420 — 1380).
+5. **Для сервисов с ротацией адресов** (Google/Gemini, CDN) список доменов
    ненадёжен: браузер резолвит через DoH и получает другие IP. Используйте
    `profileN_geo_url` со CIDR-списком в виде простого текста.
-7. **Если профилей больше одного — задавайте `profileN_mark` вручную**
-   (`0x40080000` и т.п.): в текущих сборках всем профилям по умолчанию
-   подставляется одна и та же метка `0x40000000`.
+6. **Метки профилей по умолчанию разные** (`0x40000000`, `0x08000000`,
+   `0x04000000`, `0x02000000` по индексу) — задавать вручную не нужно.
+7. Проверить, что профиль реально срабатывает, можно по счётчику пакетов:
+   `iptables -t mangle -vnL SUSANIN_PROFILES` (метка пакета в conntrack не видна).
 
 **XRay/REALITY как egress (режим `tproxy`).** Рекомендуемый способ (без TUN):
 в `susanin.conf` — `egress_type=tproxy`, `tproxy_port=12345`; при желании UDP —
@@ -196,7 +195,7 @@ CIDR; `#` — комментарий). Адрес обрабатывается �
 Сам бинарь Xray в поставку не входит — его скачивает установщик:
 ```sh
 sh bootstrap.sh --with-xray --yes                    # tar-архив
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh \
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh \
   | sh -s -- --ipk --with-xray-tproxy                 # пакет .ipk
 ```
 (Xray ставится в `/opt/sbin/xray`, SHA256 сверяется; конфиг-шаблон —
@@ -205,42 +204,44 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/instal
 ключи, поднимет Xray и перезапустит агента). Откат — `disable`. Подробности,
 проверка TCP/UDP и грабли — [XRAY.md](XRAY.md).
 
-**Резервный путь через Xray (кандидат `tproxy`).** С 0.4.0.RC1.Hotfix в
-`egress_interface` можно указать `tproxy` (синоним `xray`) вместе с обычными
-интерфейсами: `egress_interface=nwg1,tproxy`. Кандидат проверяется SOCKS-пробой
-апстрима Xray; если `nwg1` пропал, агент переключит датаплейн в tproxy-режим
-(`down` + `up`, нужен запущенный Xray), а при возврате — обратно. Fail-safe: пока
-Xray не слушает `tproxy_port`, переключения не будет (в логе WARN).
+**Резервный путь через Xray (кандидат `tproxy`).** В `egress_interface` можно
+указать `tproxy` (синоним `xray`) вместе с обычными интерфейсами:
+`egress_interface=nwg1,tproxy`. Кандидат проверяется SOCKS-пробой апстрима Xray;
+если `nwg1` пропал, агент переключит датаплейн в tproxy-режим (`down` + `up`,
+нужен запущенный Xray), а при возврате — обратно. Fail-safe: пока Xray не слушает
+`tproxy_port`, переключения не будет (в логе WARN).
 
 **Клиенты OpenConnect-сервера.** Если на роутере поднят OpenConnect, добавьте в
 `lan_interfaces` шаблон `oc+` В КОНЕЦ списка (`br0,br1,oc+`) — иначе трафик
-клиентов не обрабатывается («часть сайтов висит»). С 0.4.0.RC1.Hotfix `discover`/`rescan`
-держат `oc+` и подсеть пула автоматически, пока сервер жив.
+клиентов не обрабатывается («часть сайтов висит»). `discover`/`rescan` держат
+`oc+` и подсеть пула автоматически, пока сервер жив.
+Если на телефоне `DNS_PROBE_FINISHED_NXDOMAIN` (Android шлёт DNS на 8.8.8.8) —
+включите `dns_hijack=1`: DNS клиентов `oc+`/`wdtt+` уйдёт на резолвер роутера,
+`br0`/`br1` не затрагиваются.
 
 ## Обновление и удаление
 
 ```sh
-sh /opt/susanin/tools/susanin.sh update vX.Y.Z   # версия (актуальную см. в Releases)
+sh /opt/susanin/tools/susanin.sh update 0.4.0     # или latest — последний релиз
 sh /opt/susanin/tools/susanin.sh uninstall        # снять, конфиг сохранить
 sh /opt/susanin/tools/susanin.sh uninstall --purge # удалить всё
 ```
 
-Начиная с 0.4.0.RC1.Hotfix доступна установка пакетом Entware. Проще всего — дать
-установщику определить архитектуру и поставить пакет:
+Пакетом Entware (`.ipk`, рекомендуется): установщик сам определит архитектуру,
+скачает пакет из релиза, сверит SHA256 и выполнит `opkg install`:
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/install.sh | sh -s -- --ipk
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
 ```
 
-Он скачает нужный `.ipk` из последнего релиза в `/opt/tmp`, сверит SHA256 по
-`SHA256SUMS` и выполнит `opkg install`. Флаги: `--version v0.4.0.RC1.Hotfix`,
-`--force` (переустановить), `--yes` (без вопросов). Вручную то же самое:
+Флаги: `--version v0.4.0`, `--force` (переустановить), `--yes` (без вопросов),
+`--with-xray-tproxy` (плюс Xray). Вручную то же самое:
 
 ```sh
 mkdir -p /opt/tmp
-wget -O /opt/tmp/susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk \
-  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0.RC1.Hotfix/susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk
-opkg install /opt/tmp/susanin-keenetic_0.4.0.RC1.Hotfix_mipsel-3.4.ipk
+wget -O /opt/tmp/susanin-keenetic_0.4.0_mipsel-3.4.ipk \
+  https://github.com/R17a/Susanin.Keenetic/releases/download/v0.4.0/susanin-keenetic_0.4.0_mipsel-3.4.ipk
+opkg install /opt/tmp/susanin-keenetic_0.4.0_mipsel-3.4.ipk
 ```
 
 Файл под свою архитектуру (её показывает `opkg print-architecture`) выбирайте по

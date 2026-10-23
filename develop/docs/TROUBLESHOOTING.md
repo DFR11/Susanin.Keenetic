@@ -13,7 +13,7 @@ sh /opt/susanin/tools/report.sh     # отчёт: /opt/susanin/var/report.txt
 
 ```sh
 cd /opt/tmp
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootstrap.sh | sh -s -- --yes
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap.sh | sh -s -- --yes
 # только показать платформу (arch, ядро, BusyBox): sh susanin-install.sh --check
 ```
 
@@ -21,7 +21,7 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/develop/bootst
 ~85 МБ); полную можно разрешить лишь явным `--allow-full-unpack`. Если `tar` не
 умеет и список файлов — поставьте GNU tar: `opkg update && opkg install tar`.
 
-Вручную: `tar -xzf susanin-dev.tar.gz && cd susanin-keenetic-0.4.0-dev && sh install.sh --yes`
+Вручную: `tar -xzf susanin-keenetic-deploy-<arch>.tar.gz && sh install.sh --yes`
 (чужие `bin/susanin-agent.*` можно удалить — нужный `install.sh` выбирает сам).
 Xray в архиве нет: `sh bootstrap.sh --with-xray --yes`. Архив в RAM — `--tmp /tmp`.
 
@@ -228,7 +228,7 @@ sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
 
 Причина: health-проба ходит ICMP-эхом со своим Echo ID; если на промежуточном
 сервере каскада (Keenetic → РФ → NL) залипло NAT-состояние по этому ID, ответы
-перестают приходить, хотя туннель жив. До 0.4.0.RC1.Hotfix ID был постоянным (равен PID
+перестают приходить, хотя туннель жив. До 0.4.0 ID был постоянным (равен PID
 демона), поэтому «лечил» только перезапуск.
 
 Что делать:
@@ -237,7 +237,7 @@ sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
    ping -I nwg0 1.1.1.1            # нужен адрес/интерфейс вашего туннеля
    curl -sI https://1.1.1.1 --interface nwg0 | head -1
    ```
-2. Если ping идёт, а агент считает egress мёртвым — обновиться до 0.4.0.RC1.Hotfix:
+2. Если ping идёт, а агент считает egress мёртвым — обновиться до 0.4.0:
    там Echo ID случайный на каждую цель, при молчании ICMP делается TCP-проба
    через тот же egress, а простой пишется в лог раз в 5 минут.
 3. Посмотреть, что было:
@@ -266,11 +266,11 @@ sh /opt/susanin/tools/xray-egress.sh enable     # перезапустит Xray
 sed -i 's|^lan_interfaces=.*|lan_interfaces=br0,br1,oc+|' /opt/susanin/etc/susanin.conf
 sh /opt/susanin/tools/susanin.sh restart
 ```
-С 0.4.0.RC1.Hotfix `discover`/`rescan` больше **не добавляют** `oc+` сами (сервер
+С 0.4.0 `discover`/`rescan` больше **не добавляют** `oc+` сами (сервер
 есть не у всех) — нужен явный `--with-oc` при установке или строка в конфиге, как
 выше. Зато если `oc+` указан, подсеть пула поддерживается автоматически.
 
-Отдельный случай (тоже исправлен в Hotfix): Keenetic помечает трафик oc-клиентов
+Отдельный случай (исправлено в 0.4.0): Keenetic помечает трафик oc-клиентов
 своей меткой `0xffffaXX`, и она пересекается с нашей маской `0x30000000`. Из-за
 этого правило «`-m mark 0x0/0x30000000`» не срабатывало, CONNMARK не ставился и
 трафик уходил по политике NDM, а не в VPN. Теперь для `oc*` метки ставятся без
@@ -280,7 +280,7 @@ sh /opt/susanin/tools/susanin.sh restart
 iptables -t mangle -S SUSANIN | grep 'oc+' | head          # видно ли наши CONNMARK-правила
 conntrack -L 2>/dev/null | grep 172.16.5 | head -3         # mark=0xffffaXX = не обработан
 ```
-Если у клиентов `mark=0xffffaXX` — обновитесь до Hotfix или поставьте
+Если у клиентов `mark=0xffffaXX` — обновитесь до 0.4.0 или поставьте
 `lan_interfaces` с `oc+` и перезапустите службу.
 
 Проверка, что клиент обрабатывается:
@@ -295,19 +295,19 @@ grep 172.16.5 /proc/net/nf_conntrack | head -3     # mark=0x20000000/0x10000000
   (`192.168.1.1`), не `0.0.0.0` и не `127.0.0.1`.
 - Запустите сервис: `/opt/etc/init.d/S95susanin-web start` или
   `sh /opt/susanin/tools/susanin.sh web start` (`… web status` — состояние).
-- Панель пропала после кнопки Restart? В 0.4.0-dev4 это исправлено (демон и web
+- Панель пропала после кнопки Restart? В 0.4.0 это исправлено (демон и web
   разведены). До обновления поможет `S95susanin-web start`.
 - Проверка: `netstat -lnt | grep 8087` и
   `curl -s -H 'X-Auth-Token: ТОКЕН' http://127.0.0.1:8087/api/status | head -c 200`.
 - **Пустой `web_token` = доступ без пароля, но только из LAN** — панель работает
-  полностью (Reload/Restart/сохранение), как в сборках до RC1. Так и задумано:
+  полностью (Reload/Restart/сохранение). Так и задумано:
   токен — необязательное усиление. Если хотите закрыть панель паролем:
   `susanin-agent config set web_token <секрет> && susanin restart`, затем
   открывайте один раз с `?token=<секрет>` — дальше токен хранится в браузере и
   уходит заголовком `X-Auth-Token`/cookie.
 - **Панель без стилей, кнопки не работают (задан `web_token`).** В сборках до
-  Hotfix проверка токена распространялась и на `style.css`/`app.js`/`config.js`,
-  а браузер не прикладывает `X-Auth-Token` к `<link>`/`<script>`. Теперь первый
+  0.4.0 проверка токена распространялась и на `style.css`/`app.js`/`config.js`,
+  а браузер не прикладывает `X-Auth-Token` к `<link>`/`<script>`. В 0.4.0 первый
   GET с `?token=…` ставит cookie `susanin_token` (`Path=/`, `HttpOnly`, год),
   и подресурсы авторизуются автоматически. На старой сборке — обновите
   бинарник либо временно очистите токен.
@@ -357,11 +357,11 @@ nslookup <домен_из_списка>                   # резолвится
 Три причины по частоте:
 
 1. **В файле списка нет перевода строки в конце** (создан через `printf` без
-   `\n`, «Блокнотом», копипастом). В сборках до 0.4.0-dev8 `fill_set()` теряет
+   `\n`, «Блокнотом», копипастом). В сборках до 0.4.0 `fill_set()` терял
    последнюю строку: `read` на EOF без разделителя возвращает не-ноль, и тело
-   цикла не выполняется — файл из одной строки даёт пустой набор. Лечение:
-   дописать перевод строки (`printf 'домен\n' >> файл`) либо обновиться до
-   сборки с исправленным `profiles.sh`.
+   цикла не выполняется — файл из одной строки даёт пустой набор. В 0.4.0
+   исправлено (последняя строка читается и без `\n`); на старой сборке допишите
+   перевод строки (`printf 'домен\n' >> файл`).
 2. **Домен не резолвится с роутера** (нет DNS/фильтр): `nslookup` пуст → в набор
    ничего не добавится. Указывайте IP/CIDR или добавьте `profileN_geo_url`.
 3. **Файл пуст или закомментирован целиком** — тривиально, но проверяется первым.
@@ -454,7 +454,7 @@ fail-open DIRECT`.
 `/opt/sbin/xray run -config /opt/susanin/etc/xray-tproxy.json` (часть в состоянии
 `D`), память почти вся занята (`101M/122M`), `load average` ~20 — интернет встаёт.
 
-Причина (до `0.4.0-dev7`): `S93xray-tproxy` искал свой Xray через `pidof xray`
+Причина (в сборках до `0.4.0`): `S93xray-tproxy` искал свой Xray через `pidof xray`
 (BusyBox-апплета может не быть в окружении init-скриптов — тогда `stop` не убивал
 никого, а каждый `start` поднимал новый процесс) и посылал один `SIGTERM` без
 ожидания завершения: если процесс висел в `D`, следующий `start`/`restart` (в том
@@ -472,7 +472,7 @@ sh /opt/susanin/tools/susanin.sh start
 ```
 Если процессы в состоянии `D` не уходят — перезагрузка роутера.
 
-Что изменено в `0.4.0-dev7`: свой PID пишется в `/opt/susanin/var/xray.pid`,
+Что изменено в `0.4.0`: свой PID пишется в `/opt/susanin/var/xray.pid`,
 процессы ищутся по `cmdline` с нашим конфигом (без `pidof`), `stop` ждёт
 завершения и добивает `kill -9`, `restart` отменяется, если старый процесс не
 ушёл, а вотчдог агента не поднимает новый экземпляр, пока жив старый (в логе —

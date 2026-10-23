@@ -1,17 +1,25 @@
 Susanin.Keenetic {{TAG}}
 
 ### Установка (первый раз)
+
+Пакетом Entware `.ipk` (рекомендуется; архитектура и SHA256 проверяются сами):
 ```sh
-opkg update && opkg install ca-certificates ipset iptables conntrack
+opkg update && opkg install ca-certificates wget-ssl
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
+```
+Из tar-архива:
+```sh
+opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
 wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
 ```
-Установщик скачивает готовый архив под вашу архитектуру, определяет LAN/VPN и
-(при наличии) OpenConnect, запрашивает подтверждение и запускает демон.
-Существующие `susanin.conf`, `vpn_always.txt`, `vpn_never.txt` и кэш сохраняются.
+Установщик определяет архитектуру, LAN/VPN и (при наличии) OpenConnect,
+запрашивает подтверждение и запускает демон. Существующие `susanin.conf`,
+`vpn_always.txt`, `vpn_never.txt` и кэш сохраняются.
 
 ### Обновление
 ```sh
-sh /opt/susanin/tools/susanin.sh update {{TAG}}
+opkg install /opt/tmp/susanin-keenetic_{{TAG}}_<arch>.ipk   # если ставили .ipk
+sh /opt/susanin/tools/susanin.sh update {{TAG}}             # если ставили архивом
 ```
 `update` печатает `installed → target`, делает бэкап `susanin.conf` и
 `susanin.state` в `/opt/susanin/var/backup/`, заменяет бинарь и скрипты,

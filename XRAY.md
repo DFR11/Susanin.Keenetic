@@ -17,8 +17,8 @@
 - Бинарь Xray на роутере: `/opt/sbin/xray`. В архив он **не входит** (каждый
   ~29 МБ, нужен только для этого режима): поставить его можно установщиком —
   `sh bootstrap.sh --with-xray --yes`, либо скачать вручную `xray/xray.mipsel`
-  или `xray/xray.aarch64` (версия 1.8.24) из папки `develop/xray/` репозитория
-  и сверить с `xray/SHA256SUMS`.
+  или `xray/xray.aarch64` (версия 1.8.24) из каталога `develop/xray/`
+  репозитория (это каталог, не ветка) и сверить с `xray/SHA256SUMS`.
 - Конфиг клиента: `/opt/susanin/etc/xray-tproxy.json`
   (образец — `xray-tproxy.json.example`).
 - Рабочий Xray-сервер VLESS+REALITY (на VPS). На роутере под него ничего
