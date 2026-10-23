@@ -107,7 +107,10 @@ jobs:
           if [ ! -s /tmp/changes.md ]; then
             echo "_Список изменений см. в CHANGELOG.md._" > /tmp/changes.md
           fi
-          sed "s/{{TAG}}/${GITHUB_REF_NAME}/g" \
+          # {{TAG}} — имя тега с v (v0.4.0), {{VER}} — версия без v (0.4.0):
+          # именно так называются .ipk-файлы.
+          sed -e "s/{{VER}}/${GITHUB_REF_NAME#v}/g" \
+              -e "s/{{TAG}}/${GITHUB_REF_NAME}/g" \
             .github/release-body.template.md > /tmp/body.md
           while IFS= read -r line; do
             if [ "$line" = "<!-- CHANGELOG -->" ]; then

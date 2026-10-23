@@ -49,7 +49,7 @@ set -eu
 
 REPO="R17a/Susanin.Keenetic"
 BRANCH="develop"
-CHANNEL="dev"
+CHANNEL="stable"
 VERSION="latest"
 DEV_FILE="susanin-keenetic-0.4.0-dev.tar.gz"
 URL=""
@@ -82,9 +82,9 @@ usage() {
 Использование: sh bootstrap.sh [опции своего установщика] [опции install.sh]
 
 Опции установщика:
-  --channel dev|stable   dev (по умолчанию) — универсальный архив из ветки
-                         develop; stable — последний GitHub Release (архив под
-                         вашу архитектуру).
+  --channel dev|stable   stable (по умолчанию) — последний GitHub Release (архив
+                         под вашу архитектуру); dev — универсальный архив из
+                         ветки develop (для тестовых сборок).
   --version latest|vX.Y.Z  версия для --channel stable.
   --branch ВЕТКА         ветка GitHub для --channel dev (по умолчанию develop).
   --dev-file ИМЯ.tar.gz  имя файла dev-архива. Обычно не нужно: имя одно и то же
@@ -166,6 +166,11 @@ case "$CHANNEL" in
     stable|release) CHANNEL=stable ;;
     *) die "неверный --channel: $CHANNEL (dev|stable)" ;;
 esac
+
+# Xray берём из стабильной ветки, если ставим релиз; из BRANCH — только для
+# dev-канала. Иначе стабильная установка тянула бы бинарник из develop.
+XRAY_BRANCH="$BRANCH"
+[ "$CHANNEL" = stable ] && XRAY_BRANCH=main
 
 # --- определение платформы ---------------------------------------------------
 # Endianness по ELF-заголовку: байт 5 (EI_DATA): 1 — little, 2 — big.
@@ -711,7 +716,7 @@ download_xray() {
         if [ -z "$_dir" ] || [ ! -d "$_dir" ]; then _dir=/tmp; fi
         _file="$_dir/xray.$XRAY_ARCH"
         _tmp=1
-        _url="https://raw.githubusercontent.com/$REPO/$BRANCH/develop/xray/xray.$XRAY_ARCH"
+        _url="https://raw.githubusercontent.com/$REPO/$XRAY_BRANCH/develop/xray/xray.$XRAY_ARCH"
         say "скачиваю Xray ($XRAY_ARCH): $_url"
         if ! fetch "$_url" "$_file"; then
             warn "не удалось скачать Xray — скачайте вручную и положите в /opt/sbin/xray

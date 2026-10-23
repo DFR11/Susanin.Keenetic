@@ -13,6 +13,9 @@
 set -eu
 
 REPO="R17a/Susanin.Keenetic"
+# Ветка, откуда берутся Xray и (fallback) .ipk. Стабильные установки — main;
+# для тестов dev-сборки: SUSANIN_BRANCH=develop sh install.sh ...
+BRANCH="${SUSANIN_BRANCH:-main}"
 PREFIX=/opt/susanin
 INITD=/opt/etc/init.d
 ARCH=""
@@ -68,7 +71,7 @@ xray_setup() {
         else
             pick_fetch
             mkdir -p /opt/sbin /opt/tmp 2>/dev/null || true
-            _xbase="https://raw.githubusercontent.com/$REPO/develop/develop/xray"
+            _xbase="https://raw.githubusercontent.com/$REPO/$BRANCH/develop/xray"
             _xfile="/opt/tmp/xray.$_xa"
             say "скачиваю Xray ($_xa): $_xbase/xray.$_xa"
             if fetch "$_xbase/xray.$_xa" "$_xfile"; then
@@ -385,7 +388,7 @@ if [ "$USE_IPK" -eq 1 ]; then
         fi
         # (2) Репозиторий: develop/ipk/ (как bootstrap.sh — работает БЕЗ релиза).
         if [ -z "$IPK_FILE" ]; then
-            _rb="${SUSANIN_IPK_REPO:-https://raw.githubusercontent.com/$REPO/${SUSANIN_BRANCH:-develop}/develop/ipk}"
+            _rb="${SUSANIN_IPK_REPO:-https://raw.githubusercontent.com/$REPO/$BRANCH/develop/ipk}"
             say "в релизе нет .ipk — беру из репозитория: $_rb/"
             if fetch "$_rb/SHA256SUMS" "$_sums_dir/SHA256SUMS" 2>/dev/null; then
                 _name=$(awk -v a="_${OA}.ipk" 'index($2,a)>0 {print $2; exit}' "$_sums_dir/SHA256SUMS" \
@@ -906,7 +909,7 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" profile_failover 1
 fi
 
-# --- миграция значений по умолчанию (0.4.0.RC1.Hotfix) ----------------------
+# --- миграция значений по умолчанию (0.4.0) ----------------------------------
 # promo_per_min: дефолт поднят 30 -> 120 (обучение быстрее). Меняем только если
 # в конфиге стоит прежний дефолт — своё значение пользователя не трогаем.
 if [ -f "$PREFIX/etc/susanin.conf" ]; then

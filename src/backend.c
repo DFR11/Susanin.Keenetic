@@ -366,7 +366,8 @@ int backend_ready(const susanin_config *c)
      * только после ручного restart. Чужой DNAT 53 «готовым» не считается. */
     if (c->dns_hijack &&
         (iface_prefix_in_list(c->lan_interfaces, "oc") ||
-         iface_prefix_in_list(c->lan_interfaces, "wdtt"))) {
+         iface_prefix_in_list(c->lan_interfaces, "wdtt") ||
+         iface_prefix_in_list(c->lan_interfaces, "wdttraw"))) {
         char *na[6];
         na[0] = (char *)tool_iptables();
         na[1] = "-t"; na[2] = "nat"; na[3] = "-S"; na[4] = "PREROUTING"; na[5] = NULL;

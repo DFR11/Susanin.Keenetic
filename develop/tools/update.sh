@@ -239,7 +239,7 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
             || printf '%s=%s\n' "$k" "$d" >> "$PREFIX/etc/susanin.conf"
     done
 
-    # Миграция значений по умолчанию (0.4.0.RC1.Hotfix): promo_per_min 30 -> 120.
+    # Миграция значений по умолчанию (0.4.0): promo_per_min 30 -> 120.
     # Меняем только прежний дефолт; своё значение пользователя не трогаем.
     _pp=$(sed -n 's/^promo_per_min=//p' "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)
     if [ "$_pp" = "30" ]; then

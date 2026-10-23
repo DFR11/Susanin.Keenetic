@@ -668,20 +668,26 @@ dns_hijack_rules() {
     _n=0
     for _i in $_ifaces; do
         for _p in udp tcp; do
-            # Приватные адреса назначения (свой DNS/AdGuard в LAN) не трогаем:
-            # RETURN срабатывает раньше DNAT.
-            for _net in $DNS_HIJACK_PRIVATE; do
-                "ipt" -t nat -A PREROUTING -i "$_i" -p "$_p" --dport 53 \
-                    -d "$_net" -m comment --comment "$DNS_HIJACK_COMMENT" \
-                    -j RETURN >/dev/null 2>&1 || true
-            done
-            if "ipt" -t nat -A PREROUTING -i "$_i" -p "$_p" --dport 53 \
+            # Ставим В НАЧАЛО PREROUTING (-I 1): у Keenetic в nat PREROUTING
+            # могут быть свои ранние терминальные правила (jump/RETURN), из-за
+            # которых DNAT в конце цепочки не сработал бы. Порядок вставки:
+            # сначала DNAT, затем RETURN-исключения — каждый на позицию 1, в
+            # итоге RETURN'ы оказываются выше DNAT.
+            if "ipt" -t nat -I PREROUTING 1 -i "$_i" -p "$_p" --dport 53 \
                    -m comment --comment "$DNS_HIJACK_COMMENT" \
                    -j DNAT --to-destination "$_dst" 2>/dev/null; then
                 _n=$((_n + 1))
             else
                 say "dns_hijack: не удалось добавить $_p/53 для $_i (нет xt_comment?)"
+                continue
             fi
+            # Приватные адреса назначения (свой DNS/AdGuard в LAN) не трогаем:
+            # RETURN срабатывает раньше DNAT.
+            for _net in $DNS_HIJACK_PRIVATE; do
+                "ipt" -t nat -I PREROUTING 1 -i "$_i" -p "$_p" --dport 53 \
+                    -d "$_net" -m comment --comment "$DNS_HIJACK_COMMENT" \
+                    -j RETURN >/dev/null 2>&1 || true
+            done
         done
     done
     if [ "$_n" -eq 0 ]; then
