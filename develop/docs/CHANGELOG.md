@@ -75,8 +75,7 @@
 
 **Версия:** `susanin version` → `0.4.0`.
 
-**Благодарности:** Gave_Karen, pegakmop, NJmist — за тестирование на реальных
-роутерах и отчёты с логами.
+**Благодарности:** Gave_Karen, pegakmop, NJmist.
 
 ## v0.4.0.RC1.Hotfix
 
