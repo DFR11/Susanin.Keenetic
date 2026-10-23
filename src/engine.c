@@ -763,6 +763,30 @@ static void profiles_apply(const susanin_config *cfg)
         slogf(SL_WARN, "profiles: profiles.sh up завершился с кодом %d (профили могут не работать)", rc);
 }
 
+/* Стартовый egress (и после reload). Режим датаплейна задаёт конфиг: при
+ * egress_type=tproxy физические интерфейсы в egress_interface — это транспорт
+ * или резерв Xray, а не запрос на смену режима. Раньше здесь безусловно звали
+ * backend_set_egress(egress_list[0]), и при tproxy+первом интерфейсе агент сам
+ * снимал tproxy-правила (регрессия RC1). Если в списке есть псевдоним
+ * tproxy/xray — стартуем с него. */
+static int engine_pick_start_egress(const susanin_config *cfg)
+{
+    int i;
+    if (cfg->n_egress <= 0)
+        return 0;
+    if (strcmp(cfg->egress_type, "tproxy") != 0) {
+        backend_set_egress(cfg, cfg->egress_list[0]);
+        return 0;
+    }
+    for (i = 0; i < cfg->n_egress; i++) {
+        if (egress_is_tproxy(cfg->egress_list[i])) {
+            backend_set_egress(cfg, cfg->egress_list[i]);
+            return i;
+        }
+    }
+    return 0;   /* tproxy уже активен по конфигу — переключать нечего */
+}
+
 int engine_run(susanin_config *cfg, const char *conf_path)
 {
     susanin_state st;
@@ -838,9 +862,9 @@ int engine_run(susanin_config *cfg, const char *conf_path)
     if (cdn_load(cfg) > 0)
         slogf(SL_INFO, "CDN: загружено %d диапазонов из %s", cdn_count(), cfg->cdn_ranges_file);
     last_cdn = time(NULL);
-    /* Стартуем с первого egress из списка (фейловер переключит при падении). */
-    if (cfg->n_egress > 0)
-        backend_set_egress(cfg, cfg->egress_list[0]);
+    /* Стартуем с приоритетного egress (фейловер переключит при падении).
+     * В tproxy-режиме режим не меняем: см. engine_pick_start_egress(). */
+    ei = engine_pick_start_egress(cfg);
     {
         int i;
         time_t tn = time(NULL);
@@ -947,8 +971,9 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                         eg_up_since[i] = now;
                     }
                 }
-                if (cfg->n_egress > 0)
-                    backend_set_egress(cfg, cfg->egress_list[0]);
+                /* Режим берём из конфига; смена режима — только при явном
+                 * псевдониме tproxy/xray или смене egress_type. */
+                ei = engine_pick_start_egress(cfg);
                 if (strcmp(cfg->egress_type, "tproxy") == 0 &&
                     !backend_local_listen(cfg->tproxy_port)) {
                     slogf(SL_ERROR, "tproxy: порт %d не слушается — правила не поднимаю (DIRECT)",
@@ -1102,6 +1127,11 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                      * на следующем проходе. */
                     tunnel_up = 1;
                     slogf(SL_INFO, "tunnel UP via %s, recovery", cfg->egress_list[ei]);
+                    /* Маршрут в таблице исчезает вместе с интерфейсом (ядро
+                     * удаляет default dev <iface> при выключении VPN), и без
+                     * него метка не находит default → пакет уходит напрямую.
+                     * В tproxy-режиме вызов ничего не меняет (см. backend.c). */
+                    backend_set_egress(cfg, cfg->egress_list[ei]);
                     resync_sets(cfg, &st);
                     sweep_direct(cfg, &st, L.v, L.n);
                     va_mark_dirty(va);
@@ -1207,7 +1237,11 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 if (backend_provision(cfg) == 0) {
                     backend_mark_reprov("rules missing (fast re-provision)");
                     if (tunnel_up) {
-                        resync_sets(cfg, &st);
+                        /* Никакого resync_sets()/flush здесь: ре-провижн правил
+                         * не теряет ipset'ы, а flush на каждом быстром проходе
+                         * давал churn (ok_tcp 507↔252, ok_net 19↔6) и на окно
+                         * оставлял адреса vpn_always без пина — поток успевал
+                         * уйти напрямую. Списки только помечаем «грязными». */
                         sweep_direct(cfg, &st, L.v, L.n);
                         va_mark_dirty(va);
                         vn_mark_dirty(nv);
@@ -1300,9 +1334,9 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                     dp_fails = 0;
                     backend_mark_reprov("rules missing (NDM rebuild)");
                     if (tunnel_up) {
-                        resync_sets(cfg, &st);
-                        /* Сбросить «залипшие» прямые потоки (mark=0) по адресам
-                         * из ok-наборов, чтобы они переустановились через туннель. */
+                        /* Без resync_sets()/flush: при пересборке netfilter
+                         * ipset'ы не теряются, а flush давал churn и окно без
+                         * пинов vpn_always (см. fast re-provision выше). */
                         sweep_direct(cfg, &st, L.v, L.n);
                         last_force = 0;
                         va_mark_dirty(va);

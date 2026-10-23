@@ -290,9 +290,14 @@ static const char *tool_ip(void)
     return buf;
 }
 
-/* Готов ли датаплейн? Для interface-режима достаточно цепочки SUSANIN.
- * Для tproxy этого МАЛО: NDM может снести nat REDIRECT / mangle TPROXY / ip rule,
- * и тогда цепочка есть, а трафик идёт напрямую. Поэтому проверяем и их. */
+/* Готов ли датаплейн? Проверяем ФАКТИЧЕСКИЙ режим (g_tproxy_mode), а не
+ * cfg->egress_type: после переключения кандидата конфиг и ядро могут
+ * расходиться, и сравнение с конфигом давало вечный false → цикл
+ * «data plane missing» каждые 5–15 c.
+ * tproxy: нужны nat REDIRECT / mangle TPROXY / ip rule 0x1.
+ * interface: цепочки SUSANIN МАЛО — NDM может снести ip rule, default в таблице
+ * или разрешение в filter/FORWARD, и тогда метка ставится, а трафик идёт
+ * напрямую (снаружи это «vpn_always не работает»). */
 int backend_ready(const susanin_config *c)
 {
     char *argv[6];
@@ -307,33 +312,71 @@ int backend_ready(const susanin_config *c)
     if (run_argv(argv) != 0)
         return 0;
 
-    if (strcmp(c->egress_type, "tproxy") != 0)
-        return 1;
-
-    /* TCP REDIRECT -> tproxy_port */
-    snprintf(needle, sizeof(needle), "-j REDIRECT --to-ports %d", c->tproxy_port);
-    argv[0] = (char *)tool_iptables();
-    argv[1] = "-t"; argv[2] = "nat"; argv[3] = "-S"; argv[4] = "PREROUTING"; argv[5] = NULL;
-    if (run_capture_argv(argv, out, sizeof(out)) != 0 || !strstr(out, needle))
-        return 0;
-
-    /* UDP TPROXY -> udp_relay_port (если релей включён) */
-    if (c->udp_relay) {
-        snprintf(needle, sizeof(needle), "TPROXY --on-port %d", c->udp_relay_port);
+    if (tproxy_active(c)) {
+        /* TCP REDIRECT -> tproxy_port */
+        snprintf(needle, sizeof(needle), "-j REDIRECT --to-ports %d", c->tproxy_port);
         argv[0] = (char *)tool_iptables();
-        argv[1] = "-t"; argv[2] = "mangle"; argv[3] = "-S"; argv[4] = "PREROUTING"; argv[5] = NULL;
+        argv[1] = "-t"; argv[2] = "nat"; argv[3] = "-S"; argv[4] = "PREROUTING"; argv[5] = NULL;
         if (run_capture_argv(argv, out, sizeof(out)) != 0 || !strstr(out, needle))
             return 0;
+
+        /* UDP TPROXY -> udp_relay_port (если релей включён) */
+        if (c->udp_relay) {
+            snprintf(needle, sizeof(needle), "TPROXY --on-port %d", c->udp_relay_port);
+            argv[0] = (char *)tool_iptables();
+            argv[1] = "-t"; argv[2] = "mangle"; argv[3] = "-S"; argv[4] = "PREROUTING"; argv[5] = NULL;
+            if (run_capture_argv(argv, out, sizeof(out)) != 0 || !strstr(out, needle))
+                return 0;
+        }
+
+        /* ip rule fwmark 0x1 -> table (доставка TPROXY) */
+        {
+            char *ipargv[4];
+            snprintf(needle, sizeof(needle), "fwmark 0x1 lookup %d", c->routing_table);
+            ipargv[0] = (char *)tool_ip();
+            ipargv[1] = "rule"; ipargv[2] = "show"; ipargv[3] = NULL;
+            if (run_capture_argv(ipargv, out, sizeof(out)) != 0 || !strstr(out, needle))
+                return 0;
+        }
+        return 1;
     }
 
-    /* ip rule fwmark 0x1 -> table (доставка TPROXY) */
+    /* interface-режим: цепочки SUSANIN мало. Если NDM снёс ip rule/маршрут или
+     * пропало разрешение в filter/FORWARD, метка ставится, а пакет уходит
+     * напрямую — снаружи это выглядит как «vpn_always не работает». */
     {
-        char *ipargv[4];
-        snprintf(needle, sizeof(needle), "fwmark 0x1 lookup %d", c->routing_table);
+        char *ipargv[6];
+        char tbl[16];
+        snprintf(tbl, sizeof(tbl), "%d", c->routing_table);
+        snprintf(needle, sizeof(needle), "fwmark 0x%lx/0x%lx lookup %d",
+                 (unsigned long)c->mark_ok, (unsigned long)c->mark_mask,
+                 c->routing_table);
         ipargv[0] = (char *)tool_ip();
         ipargv[1] = "rule"; ipargv[2] = "show"; ipargv[3] = NULL;
         if (run_capture_argv(ipargv, out, sizeof(out)) != 0 || !strstr(out, needle))
             return 0;
+
+        ipargv[0] = (char *)tool_ip();
+        ipargv[1] = "route"; ipargv[2] = "show"; ipargv[3] = "table";
+        ipargv[4] = tbl; ipargv[5] = NULL;
+        if (run_capture_argv(ipargv, out, sizeof(out)) != 0 || !strstr(out, "default"))
+            return 0;
+
+        /* Политика Keenetic — FORWARD DROP; без ACCEPT по нашей метке клиенты
+         * серверных VPN (oc+/wdtt+) не доходят до туннеля. */
+        {
+            char mbuf[48];
+            char *fargv[12];
+            snprintf(mbuf, sizeof(mbuf), "0x%lx/0x%lx",
+                     (unsigned long)c->mark_ok, (unsigned long)c->mark_mask);
+            fargv[0] = (char *)tool_iptables();
+            fargv[1] = "-t"; fargv[2] = "filter"; fargv[3] = "-C";
+            fargv[4] = "FORWARD"; fargv[5] = "-m"; fargv[6] = "mark";
+            fargv[7] = "--mark"; fargv[8] = mbuf; fargv[9] = "-j";
+            fargv[10] = "ACCEPT"; fargv[11] = NULL;
+            if (run_argv(fargv) != 0)
+                return 0;
+        }
     }
     return 1;
 }
@@ -457,6 +500,16 @@ int backend_set_egress(const susanin_config *c, const char *iface)
         return -1;
     want_tproxy = is_tproxy_name(iface);
     was_tproxy = tproxy_active(c);
+    /* Режим задан конфигом как tproxy, а в списке egress стоит физический
+     * интерфейс: это транспорт/резерв Xray, а НЕ запрос на смену режима.
+     * Раньше здесь выполнялся teardown tproxy -> interface на каждом старте
+     * (регрессия 0.4.0.RC1): правила REDIRECT снимались, а backend_ready()
+     * продолжал требовать их по конфигу — отсюда вечный цикл
+     * «data plane missing» и адреса из vpn_always, уходящие напрямую. */
+    if (was_tproxy && !want_tproxy && strcmp(c->egress_type, "tproxy") == 0) {
+        snprintf(g_active_egress, sizeof(g_active_egress), "%s", iface);
+        return 0;
+    }
     if (want_tproxy && !backend_local_listen(c->tproxy_port)) {
         slogf(SL_ERROR,
               "egress %s: Xray не слушает порт %d — в tproxy-режим не перехожу",

@@ -228,6 +228,22 @@ static int count_list_lines(const char *path)
     return n;
 }
 
+/* Фактический режим датаплейна по ядру (а не по конфигу): tproxy, если есть
+ * наше правило fwmark 0x1 -> table (доставка TPROXY) или nat REDIRECT на порт
+ * Xray. Конфиг может расходиться с ядром: NDM снёс правила, кандидат переключил
+ * режим, после ручного datapath down. Раньше status верил конфигу и показывал
+ * зелёное при снятых правилах. */
+static int dp_actual_tproxy(const char *ipt, const char *ip,
+                            const susanin_config *cfg)
+{
+    char *a[6];
+    if (rule_fwmark_present(ip, 0x1, 0xffffffffUL, cfg->routing_table))
+        return 1;
+    a[0] = (char *)ipt; a[1] = "-t"; a[2] = "nat"; a[3] = "-S";
+    a[4] = "PREROUTING"; a[5] = NULL;
+    return cap_contains(ipt, a, "--to-ports");
+}
+
 int ops_status(const susanin_config *cfg, const char *conf_path)
 {
     const char *ipt = tool("iptables");
@@ -235,17 +251,25 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
     const char *ipset = tool("ipset");
     const char *state_path = "/opt/susanin/var/susanin.state";
     char *a[8];
+    int cfg_tp, act_tp;
 
     printf("susanin-agent %s\n", SUSANIN_VERSION);
     printf("config file: %s (%s)\n", conf_path,
            access(conf_path, R_OK) == 0 ? "present" : "absent");
     printf("egress=%s table=%d lan=%s\n", cfg->egress_interface,
            cfg->routing_table, cfg->lan_interfaces);
-    if (strcmp(cfg->egress_type, "tproxy") == 0)
+    cfg_tp = strcmp(cfg->egress_type, "tproxy") == 0;
+    act_tp = dp_actual_tproxy(ipt, ip, cfg);
+    if (cfg_tp)
         printf("mode=tproxy port=%d (Xray %s)\n", cfg->tproxy_port,
                backend_local_listen(cfg->tproxy_port) ? "LISTEN" : "NOT LISTENING");
     else
         printf("mode=interface\n");
+    printf("mode actual: %s (config: %s)%s\n", act_tp ? "tproxy" : "interface",
+           cfg_tp ? "tproxy" : "interface",
+           act_tp != cfg_tp
+               ? "  <-- РАССИНХРОН: в ядре другой режим, выполните susanin.sh reload"
+               : "");
     printf("egress pool: n=%d failback=%d debounce=%ds race=%d\n",
            cfg->n_egress, cfg->egress_failback, cfg->egress_failback_debounce,
            cfg->egress_race);
@@ -277,7 +301,7 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
     a[0] = (char *)ipt; a[1] = "-t"; a[2] = "mangle"; a[3] = "-S"; a[4] = "PREROUTING"; a[5] = NULL;
     print_check("PREROUTING jump", cap_contains(ipt, a, "-j SUSANIN"));
 
-    if (strcmp(cfg->egress_type, "tproxy") == 0) {
+    if (act_tp) {
         /* tproxy: правила test/ok -> table 100 намеренно отсутствуют; вместо них
          * fwmark 0x1 + local-маршрут (UDP-релей) и nat REDIRECT (TCP). */
         print_check("ip rule tproxy->table",
@@ -304,9 +328,19 @@ int ops_status(const susanin_config *cfg, const char *conf_path)
             a[0] = (char *)ip; a[1] = "route"; a[2] = "show"; a[3] = "table"; a[4] = tbl; a[5] = NULL;
             print_check("route default in table", cap_contains(ip, a, "default"));
         }
+        /* Политика Keenetic — FORWARD DROP: без ACCEPT по нашей метке клиенты
+         * серверных VPN (oc+/wdtt+) не доходят до туннеля. */
+        {
+            char mbuf[48];
+            snprintf(mbuf, sizeof(mbuf), "0x%lx/0x%lx",
+                     (unsigned long)cfg->mark_ok, (unsigned long)cfg->mark_mask);
+            a[0] = (char *)ipt; a[1] = "-t"; a[2] = "filter"; a[3] = "-S";
+            a[4] = "FORWARD"; a[5] = NULL;
+            print_check("FORWARD ACCEPT (mark)", cap_contains(ipt, a, mbuf));
+        }
     }
 
-    if (strcmp(cfg->egress_type, "tproxy") == 0) {
+    if (act_tp) {
         long when = 0;
         char reason[200] = "";
         if (backend_read_reprov(&when, reason, sizeof(reason)) == 0 && when > 0) {

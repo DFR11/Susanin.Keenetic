@@ -534,6 +534,49 @@ profiles_return_rules() {
     done
 }
 
+# FORWARD: политика Keenetic по умолчанию DROP. Метка Susanin ставится в mangle
+# PREROUTING, но клиенты серверных VPN (oc+, wdtt+) не имеют разрешения в
+# интерфейс «Дополнительного подключения»: пакет умирает в filter/FORWARD, в
+# conntrack поток есть, а в POSTROUTING на egress — 0 пакетов. Поэтому разрешаем
+# ТОЛЬКО свои метки: трафик уже отфильтрован цепочкой SUSANIN, чужие правила и
+# политики NDM не затрагиваются. В tproxy-режиме правило безвредно (трафик не
+# форвардится, а уходит в локальный Xray), поэтому ставим его всегда — так после
+# смены режима не остаётся «дыры».
+_fwd_mark_list() {
+    _fl="$MARK_OK/$MARK_MASK $MARK_TEST/$MARK_MASK"
+    _pi=1
+    while [ "$_pi" -le 4 ]; do
+        _pm=$(cfg_val "profile${_pi}_mark" "")
+        if [ -z "$_pm" ]; then
+            case "$_pi" in
+                1) _pm=0x40000000 ;; 2) _pm=0x08000000 ;;
+                3) _pm=0x04000000 ;; 4) _pm=0x02000000 ;;
+            esac
+        fi
+        _fl="$_fl $_pm/$_pm"
+        _pi=$((_pi + 1))
+    done
+    if [ "$KERNEL_OFFLOAD" = "1" ] && [ -n "$KERNEL_EGRESS" ]; then
+        _fl="$_fl $KERNEL_MARK/$KERNEL_MARK"
+    fi
+    printf '%s' "$_fl"
+}
+
+forward_accept_clean() {
+    for _fm in $(_fwd_mark_list); do
+        "ipt" -t filter -D FORWARD -m mark --mark "$_fm" -j ACCEPT >/dev/null 2>&1 || true
+    done
+}
+
+forward_accept_rules() {
+    forward_accept_clean
+    for _fm in $(_fwd_mark_list); do
+        if ! "ipt" -t filter -I FORWARD 1 -m mark --mark "$_fm" -j ACCEPT 2>/dev/null; then
+            say "FORWARD ACCEPT для метки $_fm не добавлен (нет xt_mark?) — клиенты серверных VPN могут не ходить в туннель"
+        fi
+    done
+}
+
 command_up() {
     backup
     ensure_sets
@@ -543,6 +586,7 @@ command_up() {
     profiles_return_rules
     ensure_jump
     ensure_table
+    forward_accept_rules
     ipv6_block_rules
     quic_block_rules
     mss_clamp_rules
@@ -566,6 +610,7 @@ command_down() {
     "$IPCMD" route del local default dev lo table "$TABLE" >/dev/null 2>&1 || true
     "$IPCMD" route flush table "$TABLE" >/dev/null 2>&1 || true
     tproxy_clean || true
+    forward_accept_clean || true
     ipv6_block_clean || true
     quic_block_clean || true
     mss_clamp_clean || true
@@ -601,6 +646,17 @@ command_status() {
         echo "$DIRECTSET = (absent)"
     fi
     "$IPCMD" rule show | grep -E "lookup $TABLE" || echo "no ip rule for table $TABLE"
+    _fa=0
+    _fan=0
+    if "ipt" -t filter -S FORWARD >/dev/null 2>&1; then
+        for _fm in $(_fwd_mark_list); do
+            _fan=$((_fan + 1))
+            if "ipt" -t filter -S FORWARD 2>/dev/null | grep -q -- "-m mark --mark $_fm -j ACCEPT"; then
+                _fa=$((_fa + 1))
+            fi
+        done
+    fi
+    echo "forward_accept: rules=$_fa/$_fan (метки ok/test/профили — нужны клиентам серверных VPN: oc+/wdtt+)"
     if [ "${TPROXY_PORT:-0}" -gt 0 ] 2>/dev/null; then
         n=$("ipt" -t nat -S PREROUTING 2>/dev/null | grep -c 'REDIRECT --to-ports' || true)
         echo "redirect: port=$TPROXY_PORT rules=$n"
