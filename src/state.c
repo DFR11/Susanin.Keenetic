@@ -17,6 +17,7 @@ void state_init(susanin_state *s)
     set_init(&s->watch_tcp); set_init(&s->cooldown_tcp);
     set_init(&s->test_udp); set_init(&s->ok_udp);
     set_init(&s->watch_udp); set_init(&s->cooldown_udp);
+    set_init(&s->net); set_init(&s->direct); set_init(&s->never);
 }
 
 static void set_free(state_set *st)
@@ -31,6 +32,63 @@ void state_free(susanin_state *s)
     set_free(&s->watch_tcp); set_free(&s->cooldown_tcp);
     set_free(&s->test_udp); set_free(&s->ok_udp);
     set_free(&s->watch_udp); set_free(&s->cooldown_udp);
+    set_free(&s->net); set_free(&s->direct); set_free(&s->never);
+}
+
+/* Ключ записи: port<=0 — адрес как есть, port>0 — "адрес:порт" (port-aware).
+ * Значения пишутся и читаются как строки, поэтому формат файла состояния не
+ * меняется: старые записи (просто адрес) читаются по-прежнему, а в port-aware
+ * режиме они просто не совпадают с парами и истекают по своему TTL. */
+void state_key(char *dst, size_t n, const char *addr, int port)
+{
+    if (!dst || !n)
+        return;
+    if (port > 0)
+        snprintf(dst, n, "%.58s:%d", addr ? addr : "", port);
+    else
+        snprintf(dst, n, "%s", addr ? addr : "");
+}
+
+/* Обратное разложение ключа (см. state.h): получаем ip и порт раздельно, чтобы
+ * обратиться к ipset, где пара записывается через запятую. */
+void state_key_split(const char *key, char *ip, size_t ipn, int *port)
+{
+    const char *c;
+    int colons = 0;
+    if (!ip || !ipn)
+        return;
+    if (port)
+        *port = 0;
+    if (!key) {
+        ip[0] = '\0';
+        return;
+    }
+    /* Пара — только форма "IPv4:порт" (ровно одно двоеточие, дальше цифры):
+     * у IPv6-ключей двоеточий больше, и как пару мы их не разбираем. */
+    for (c = key; *c; c++)
+        if (*c == ':')
+            colons++;
+    if (colons == 1) {
+        const char *colon = strchr(key, ':');
+        const char *d;
+        int all_digits = 1;
+        for (d = colon + 1; *d; d++)
+            if (*d < '0' || *d > '9') {
+                all_digits = 0;
+                break;
+            }
+        if (all_digits && colon[1]) {
+            size_t l = (size_t)(colon - key);
+            if (l >= ipn)
+                l = ipn - 1;
+            memcpy(ip, key, l);
+            ip[l] = '\0';
+            if (port)
+                *port = atoi(colon + 1);
+            return;
+        }
+    }
+    snprintf(ip, ipn, "%s", key);
 }
 
 void state_expire(state_set *st, time_t now)
@@ -78,8 +136,7 @@ static int set_reserve(state_set *st, int need)
     return 0;
 }
 
-int state_add(state_set *st, const char *addr, time_t now, int ttl, int refresh)
-{
+int state_add(state_set *st, const char *addr, time_t now, int ttl, int refresh){
     int i;
     state_entry *e;
     time_t expire;
@@ -93,7 +150,10 @@ int state_add(state_set *st, const char *addr, time_t now, int ttl, int refresh)
     } else {
         for (i = 0; i < st->n; i++) {
             if (st->v[i].expire > now && strcmp(st->v[i].addr, addr) == 0) {
-                st->v[i].expire = expire;
+                /* refresh: срок только продлеваем — «освежение» не должно
+                 * укорачивать уже выученную запись. */
+                if (expire > st->v[i].expire)
+                    st->v[i].expire = expire;
                 return 0;
             }
         }
@@ -105,6 +165,16 @@ int state_add(state_set *st, const char *addr, time_t now, int ttl, int refresh)
     snprintf(e->addr, sizeof(e->addr), "%s", addr);
     e->expire = expire;
     return 0;
+}
+
+/* Добавить запись или продлить существующую. Отдельный хелпер нужен потому, что
+ * state_add(refresh=1) существующую запись только продлевает, а отсутствующую НЕ
+ * создаёт (возвращает -1) — на этом уже дважды ломались пины и префиксы. */
+int state_touch(state_set *st, const char *addr, time_t now, int ttl)
+{
+    if (state_has(st, addr, now))
+        return state_add(st, addr, now, ttl, 1);
+    return state_add(st, addr, now, ttl, 0);
 }
 
 int state_remove(state_set *st, const char *addr)
@@ -144,6 +214,10 @@ int state_save(const char *path, const susanin_state *s)
     set_save(fp, "ok udp", &s->ok_udp);
     set_save(fp, "cool tcp", &s->cooldown_tcp);
     set_save(fp, "cool udp", &s->cooldown_udp);
+    /* Префиксы ok_net и «мягко-прямо» (формат тот же: phase proto addr expire). */
+    set_save(fp, "net tcp", &s->net);
+    set_save(fp, "direct tcp", &s->direct);
+    set_save(fp, "never tcp", &s->never);
     fclose(fp);
     rename(tmp, path);
     return 0;
@@ -174,6 +248,12 @@ int state_load(const char *path, susanin_state *s)
             set = !strcmp(proto, "tcp") ? &s->ok_tcp : &s->ok_udp;
         else if (!strcmp(phase, "cool"))
             set = !strcmp(proto, "tcp") ? &s->cooldown_tcp : &s->cooldown_udp;
+        else if (!strcmp(phase, "net"))
+            set = &s->net;
+        else if (!strcmp(phase, "direct"))
+            set = &s->direct;
+        else if (!strcmp(phase, "never"))
+            set = &s->never;
         if (set)
             state_add(set, addr, now, ttl, 0);
     }

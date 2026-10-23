@@ -1,18 +1,25 @@
 Susanin.Keenetic {{TAG}}
 
 ### Установка (первый раз)
+
+Пакетом Entware `.ipk` (рекомендуется; архитектура и SHA256 проверяются сами):
 ```sh
-opkg update && opkg install ca-certificates ipset iptables conntrack
-wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/{{TAG}}/install.sh | sh
+opkg update && opkg install ca-certificates wget-ssl
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh -s -- --ipk
 ```
-Установщик скачивает готовый архив под вашу архитектуру, определяет LAN/VPN и
-(при наличии) OpenConnect, запрашивает подтверждение и запускает демон.
-Существующие `susanin.conf`, `vpn_always.txt`, `vpn_never.txt` и кэш сохраняются.
+Из tar-архива:
+```sh
+opkg update && opkg install ca-certificates ipset iptables conntrack wget-ssl
+wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
+```
+Установщик определяет архитектуру, LAN/VPN и (при наличии) OpenConnect,
+запрашивает подтверждение и запускает демон. Существующие `susanin.conf`,
+`vpn_always.txt`, `vpn_never.txt` и кэш сохраняются.
 
 ### Обновление
 ```sh
-sh /opt/susanin/tools/susanin.sh update
-sh /opt/susanin/tools/susanin.sh update {{TAG}}
+opkg install /opt/tmp/susanin-keenetic_{{VER}}_<arch>.ipk   # если ставили .ipk
+sh /opt/susanin/tools/susanin.sh update {{TAG}}             # если ставили архивом
 ```
 `update` печатает `installed → target`, делает бэкап `susanin.conf` и
 `susanin.state` в `/opt/susanin/var/backup/`, заменяет бинарь и скрипты,
@@ -45,8 +52,14 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/{{TAG}}/tools/
 ### Сборки
 - архивы: `susanin-keenetic-deploy-mipsel.tar.gz`, `…-mips.tar.gz`,
   `…-aarch64.tar.gz`, `…-armv7.tar.gz`, `…-x86_64.tar.gz` и `SHA256SUMS`;
+- пакеты Entware: `susanin-keenetic_{{VER}}_mipsel-3.4.ipk`, `…_mips-3.4.ipk`,
+  `…_aarch64-3.10.ipk`, `…_armv7sf-k3.2.ipk`, `…_x86-64.ipk` (`opkg install <файл>.ipk`);
 - контейнер: `ghcr.io/r17a/susanin.keenetic:{{TAG}}` (+`latest`).
 
 **Проверено**: mipsel — Keenetic Viva, KeeneticOS 5.1.4–5.1.5, Entware
 (+ клиент OpenConnect). Остальные архитектуры собраны и приложены готовыми
 архивами, но на живом железе не тестировались — сообщайте об ошибках в Issues.
+
+### Благодарности
+За помощь проекту (тестирование на реальных роутерах, отчёты с логами, разбор
+проблем) — спасибо **Gave_Karen**, **pegakmop**, **NJmist**.

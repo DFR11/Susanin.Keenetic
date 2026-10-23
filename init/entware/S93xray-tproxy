@@ -1,0 +1,136 @@
+#!/bin/sh
+# XRay-egress (tproxy): Xray dokodemo-door (tproxy) ДО старта Susanin.Keenetic
+# (init.d запускает скрипты по имени: S93 < S94). Без TUN/tun2socks.
+# Порт должен совпадать с tproxy_port в susanin.conf.
+# Если бинаря/конфига нет — тихо выходит (режим не используется).
+#
+# Установка: /opt/etc/init.d/S93xray-tproxy (chmod +x).
+# Управление: S93xray-tproxy start|stop|restart
+
+XRAY=/opt/sbin/xray
+XCFG=/opt/susanin/etc/xray-tproxy.json
+LOGF=/opt/susanin/var/xray.log
+PIDF=/opt/susanin/var/xray.pid
+PORT=12345
+
+# PID ИМЕННО нашего Xray. Раньше использовался `pidof xray` — он матчит любой
+# процесс с этим именем: чужой Xray (XKeen и т.п.) принимался за свой, старт
+# нашего молча пропускался, а stop его убивал. Теперь: pidfile, и только если
+# он потерян — поиск по cmdline (наш конфиг /opt/susanin/etc/xray-tproxy.json).
+xray_pid() {
+    if [ -f "$PIDF" ]; then
+        _p=$(cat "$PIDF" 2>/dev/null || true)
+        case "$_p" in ''|*[!0-9]*) _p="" ;; esac
+        if [ -n "$_p" ] && [ -r "/proc/$_p/cmdline" ] && \
+           tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null | grep -q "$XCFG" && tr '\0' ' ' < "/proc/$_p/cmdline" 2>/dev/null | grep -q -- '-config'; then
+            printf '%s' "$_p"
+            return 0
+        fi
+    fi
+    for _d in /proc/[0-9]*; do
+        [ -r "$_d/cmdline" ] || continue
+        if tr '\0' ' ' < "$_d/cmdline" 2>/dev/null | grep -q "$XCFG" && tr '\0' ' ' < "$_d/cmdline" 2>/dev/null | grep -q -- '-config'; then
+            printf '%s' "${_d#/proc/}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+start() {
+    [ -x "$XRAY" ] && [ -f "$XCFG" ] || { echo "xray-tproxy: нет Xray/конфига — пропуск"; return 0; }
+    mkdir -p /opt/susanin/var
+    # Уровень логов Xray (независимо от log_level Susanin.Keenetic) — из susanin.conf.
+    # Xray читает уровень только при старте, поэтому применяем его до запуска,
+    # а для уже запущенного процесса нужен restart.
+    _lvl=$(sed -n 's/^xray_loglevel=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    [ -n "$_lvl" ] || _lvl=warning
+    if grep -q '"loglevel"' "$XCFG" 2>/dev/null; then
+        sed -i "s|\"loglevel\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"loglevel\": \"$_lvl\"|" "$XCFG" 2>/dev/null || true
+    fi
+    # access-лог («accepted …») не зависит от loglevel — выключаем отдельно.
+    if grep -q '"access"' "$XCFG" 2>/dev/null; then
+        sed -i "s|\"access\"[[:space:]]*:[[:space:]]*\"[^\"]*\"|\"access\": \"none\"|" "$XCFG" 2>/dev/null || true
+    elif grep -q '"log"[[:space:]]*:[[:space:]]*{' "$XCFG" 2>/dev/null; then
+        sed -i "s|\"log\"[[:space:]]*:[[:space:]]*{|\"log\": { \"access\": \"none\",|" "$XCFG" 2>/dev/null || true
+    fi
+    # Память Xray: агрессивнее GC и мягкий лимит (роутер без swap, ~120 МБ RAM).
+    # Ключи xray_gogc / xray_gomemlimit в susanin.conf; значения по умолчанию
+    # безопасны для mipsel/aarch64.
+    _gogc=$(sed -n 's/^xray_gogc=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    [ -n "$_gogc" ] || _gogc=50
+    _gomem=$(sed -n 's/^xray_gomemlimit=//p' /opt/susanin/etc/susanin.conf 2>/dev/null | tail -n1)
+    [ -n "$_gomem" ] || _gomem=64MiB
+    _run=$(xray_pid || true)
+    if [ -z "$_run" ]; then
+        GOGC="$_gogc" GOMEMLIMIT="$_gomem" "$XRAY" run -config "$XCFG" >>"$LOGF" 2>&1 &
+        _bg=$!
+        echo "$_bg" > "$PIDF" 2>/dev/null || true
+        echo "xray-tproxy: started (pid=$_bg, port=$PORT, loglevel=$_lvl, GOGC=$_gogc, GOMEMLIMIT=$_gomem)"
+        # Проверяем, что процесс удержался: если порт занят чужим Xray, наш
+        # упадёт на bind — без этой проверки агент молча считал бы порт живым.
+        sleep 2
+        if ! xray_pid >/dev/null 2>&1; then
+            rm -f "$PIDF" 2>/dev/null || true
+            echo "xray-tproxy: ВНИМАНИЕ — Xray не удержался (порт $PORT занят? смотрите $LOGF)"
+            echo "xray-tproxy: чужой процесс на этом порту МЫ НЕ ТРОГАЕМ — смените tproxy_port или остановите его сами"
+        fi
+    else
+        echo "xray-tproxy: уже запущен (pid=$_run); новый loglevel=$_lvl применится после 'restart'"
+    fi
+}
+
+stop() {
+    _p=$(xray_pid || true)
+    if [ -z "$_p" ]; then
+        echo "xray-tproxy: наш Xray не запущен (чужой не трогаем)"
+        rm -f "$PIDF" 2>/dev/null || true
+        return 0
+    fi
+    # SIGTERM, затем ЖДЁМ завершения и добиваем SIGKILL. Старый вариант слал один
+    # SIGTERM и сразу продолжал: если процесс висел в состоянии D (или игнорировал
+    # сигнал), следующий start поднимал второй экземпляр — на роутере накопилось
+    # ~14 процессов Xray, память 101/122 МБ, load average ~20 (2026-10-10).
+    kill "$_p" 2>/dev/null
+    _i=0
+    while [ "$_i" -lt 10 ]; do
+        [ -r "/proc/$_p/cmdline" ] || break
+        sleep 1
+        _i=$((_i + 1))
+    done
+    if [ -r "/proc/$_p/cmdline" ]; then
+        kill -9 "$_p" 2>/dev/null
+        _i=0
+        while [ "$_i" -lt 5 ]; do
+            [ -r "/proc/$_p/cmdline" ] || break
+            sleep 1
+            _i=$((_i + 1))
+        done
+    fi
+    if [ -r "/proc/$_p/cmdline" ]; then
+        echo "xray-tproxy: процесс $_p не завершился (состояние D?) — новый НЕ поднимаю"
+        rm -f "$PIDF" 2>/dev/null || true
+        return 1
+    fi
+    rm -f "$PIDF" 2>/dev/null || true
+    echo "xray-tproxy: stopped (pid=$_p)"
+    return 0
+}
+
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart)
+        # Если старый процесс не завершился, второй экземпляр не поднимаем.
+        if ! stop; then
+            echo "xray-tproxy: restart отменён — сначала освободите процесс вручную"
+            exit 1
+        fi
+        sleep 1
+        start ;;
+    status)
+        _p=$(xray_pid || true)
+        if [ -n "$_p" ]; then echo "xray-tproxy: running (pid=$_p)"; else echo "xray-tproxy: not running"; fi
+        ;;
+    *) echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac

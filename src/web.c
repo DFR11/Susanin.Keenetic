@@ -1,0 +1,1732 @@
+/* Встроенная веб-панель Susanin.Keenetic (W1).
+ *
+ * Мини-HTTP-сервер в самом агенте: без внешних зависимостей, один бинарь на
+ * всех архитектурах. Слушает ТОЛЬКО LAN-адрес (web_listen), вход по токену
+ * (web_token) либо без него — тогда с предупреждением. Отдаёт:
+ *   GET /api/status   — JSON-снимок (read-only, ops_status_json)
+ *   GET /api/config   — текущие параметры конфига (секреты маскируются)
+ *   GET /api/choices  — «известные системе» значения для панели (интерфейсы,
+ *                       подсети, таблицы, метки, файлы списков профилей)
+ *   POST /api/config  — правка существующих ключей (form-urlencoded)
+ *   GET /api/list?name=vpn_always|vpn_never — содержимое списка (read-only)
+ *   GET /<path>       — статика из SUSANIN_WWW_ROOT
+ * По умолчанию Web выключен (web_enable=0). Не трогаем чужие конфиги/порты. */
+
+#define _GNU_SOURCE
+#include "web.h"
+#include "ops.h"
+#include "log.h"
+#include "web_choices.h"
+
+#include <arpa/inet.h>
+#include <ctype.h>
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
+#ifndef SUSANIN_WWW_ROOT
+#define SUSANIN_WWW_ROOT "/opt/susanin/www"
+#endif
+
+#define REQ_MAX 8192
+#define MAX_BODY 16384
+/* Тело запроса на полную перезапись списка (Memo-редактор). Списки бывают
+ * ~6–10 КБ; раньше тело читалось в буфер 4096, и сохранение молча обрезалось. */
+#define MAX_LIST_BODY 65536
+
+/* Ограничение числа строк при полной перезаписи списка. */
+#define MAX_LIST_LINES 20000
+
+static const char *status_text(int code)
+{
+    switch (code) {
+    case 200: return "OK";
+    case 400: return "Bad Request";
+    case 401: return "Unauthorized";
+    case 403: return "Forbidden";
+    case 404: return "Not Found";
+    case 405: return "Method Not Allowed";
+    case 500: return "Internal Server Error";
+    default:  return "Error";
+    }
+}
+
+static int send_all(int fd, const void *data, size_t n)
+{
+    const char *p = (const char *)data;
+    while (n) {
+        ssize_t w = send(fd, p, n, 0);
+        if (w < 0) {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (w == 0)
+            return -1;
+        p += w;
+        n -= (size_t)w;
+    }
+    return 0;
+}
+
+static void reply(int fd, int code, const char *ctype, const void *body,
+                  size_t len, int head_only)
+{
+    char hdr[256];
+    int hl = snprintf(hdr, sizeof(hdr),
+                      "HTTP/1.1 %d %s\r\n"
+                      "Content-Type: %s\r\n"
+                      "Content-Length: %zu\r\n"
+                      "Cache-Control: no-store\r\n"
+                      "Connection: close\r\n"
+                      "X-Content-Type-Options: nosniff\r\n"
+                      "\r\n",
+                      code, status_text(code), ctype, len);
+    if (hl < 0)
+        return;
+    if (send_all(fd, hdr, (size_t)hl) != 0)
+        return;
+    if (!head_only && len)
+        send_all(fd, body, len);
+}
+
+static void reply_text(int fd, int code, const char *msg, int head_only)
+{
+    char body[256];
+    int n = snprintf(body, sizeof(body), "%s\n", msg ? msg : "");
+    if (n < 0)
+        n = 0;
+    reply(fd, code, "text/plain; charset=utf-8", body, (size_t)n, head_only);
+}
+
+static const char *mime_for(const char *path)
+{
+    const char *dot = strrchr(path, '.');
+    if (!dot)
+        return "application/octet-stream";
+    if (!strcasecmp(dot, ".html") || !strcasecmp(dot, ".htm"))
+        return "text/html; charset=utf-8";
+    if (!strcasecmp(dot, ".css"))
+        return "text/css; charset=utf-8";
+    if (!strcasecmp(dot, ".js"))
+        return "application/javascript; charset=utf-8";
+    if (!strcasecmp(dot, ".json"))
+        return "application/json; charset=utf-8";
+    if (!strcasecmp(dot, ".svg"))
+        return "image/svg+xml";
+    if (!strcasecmp(dot, ".png"))
+        return "image/png";
+    if (!strcasecmp(dot, ".ico"))
+        return "image/x-icon";
+    if (!strcasecmp(dot, ".woff2"))
+        return "font/woff2";
+    if (!strcasecmp(dot, ".txt"))
+        return "text/plain; charset=utf-8";
+    return "application/octet-stream";
+}
+
+static int has_dotdot(const char *p)
+{
+    for (; p && p[0]; p++)
+        if (p[0] == '.' && p[1] == '.')
+            return 1;
+    return 0;
+}
+
+/* Белый список расширений статики: через www нельзя отдать .conf/.token и пр. */
+static int ext_allowed(const char *path)
+{
+    static const char *ok[] = { ".html", ".htm", ".css", ".js", ".svg", ".png",
+                                ".jpg", ".jpeg", ".gif", ".ico", ".woff",
+                                ".woff2", ".webmanifest", NULL };
+    const char *dot = strrchr(path, '.');
+    int i;
+    if (!dot)
+        return 0;
+    for (i = 0; ok[i]; i++)
+        if (!strcasecmp(dot, ok[i]))
+            return 1;
+    return 0;
+}
+
+/* Определена ниже (рядом с cookie_value); нужна здесь для Set-Cookie. */
+static void cookie_encode(const char *s, char *out, size_t n);
+
+/* Отдать файл из www_root (доступ уже проверен по токену). Путь канонизируется:
+ * реальный файл обязан лежать внутри www_root (защита от симлинков и «../»), и
+ * расширение — из белого списка (никаких .conf и т.п.).
+ * auth_token != NULL — токен пришёл в ?token= этого GET; ставим его cookie,
+ * чтобы браузер приложил токен к style.css/app.js/config.js: у <link>/<script>
+ * нет возможности передать X-Auth-Token. */
+static void serve_file(int fd, const char *root, const char *rel, int head_only,
+                       const char *auth_token)
+{
+    char path[512];
+    char *real = NULL, *rootr = NULL;
+    struct stat st;
+    int f;
+    size_t rl;
+
+    if (has_dotdot(rel)) {
+        reply_text(fd, 403, "forbidden", head_only);
+        return;
+    }
+    if (rel[0] == '/')
+        rel++;
+    if (rel[0] == '\0')
+        rel = "index.html";
+
+    {
+        size_t l = strlen(rel);
+        int r;
+        if (l && rel[l - 1] == '/')
+            r = snprintf(path, sizeof(path), "%s/%sindex.html", root, rel);
+        else
+            r = snprintf(path, sizeof(path), "%s/%s", root, rel);
+        if (r < 0 || (size_t)r >= sizeof(path)) {
+            reply_text(fd, 404, "not found", head_only);
+            return;
+        }
+    }
+
+    /* realpath(.., NULL) — malloc-вариант: не зависит от PATH_MAX и fortify. */
+    rootr = realpath(root, NULL);
+    real = realpath(path, NULL);
+    if (!rootr || !real) {
+        free(rootr);
+        free(real);
+        reply_text(fd, 404, "not found", head_only);
+        return;
+    }
+    if (stat(real, &st) == 0 && S_ISDIR(st.st_mode)) {
+        char idx[600];
+        char *ri;
+        int r = snprintf(idx, sizeof(idx), "%s/index.html", real);
+        if (r < 0 || (size_t)r >= sizeof(idx)) {
+            free(rootr);
+            free(real);
+            reply_text(fd, 404, "not found", head_only);
+            return;
+        }
+        ri = realpath(idx, NULL);
+        free(real);
+        real = ri;
+        if (!real) {
+            free(rootr);
+            reply_text(fd, 404, "not found", head_only);
+            return;
+        }
+    }
+    rl = strlen(rootr);
+    if (strncmp(real, rootr, rl) != 0 || (real[rl] != '/' && real[rl] != '\0')) {
+        free(rootr);
+        free(real);
+        reply_text(fd, 403, "forbidden", head_only);
+        return;
+    }
+    if (!ext_allowed(real)) {
+        free(rootr);
+        free(real);
+        reply_text(fd, 403, "forbidden", head_only);
+        return;
+    }
+
+    f = open(real, O_RDONLY);
+    if (f < 0) {
+        free(rootr);
+        free(real);
+        reply_text(fd, 404, "not found", head_only);
+        return;
+    }
+    if (fstat(f, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(f);
+        free(rootr);
+        free(real);
+        reply_text(fd, 404, "not found", head_only);
+        return;
+    }
+
+    {
+        char hdr[640];
+        char cookie[320] = "";
+        if (auth_token && auth_token[0]) {
+            char enc[200];
+            cookie_encode(auth_token, enc, sizeof(enc));
+            snprintf(cookie, sizeof(cookie),
+                     "Set-Cookie: susanin_token=%s; Path=/; Max-Age=31536000; "
+                     "HttpOnly; SameSite=Strict\r\n", enc);
+        }
+        {
+            int hl = snprintf(hdr, sizeof(hdr),
+                              "HTTP/1.1 200 OK\r\n"
+                              "Content-Type: %s\r\n"
+                              "Content-Length: %lld\r\n"
+                              "Cache-Control: no-store\r\n"
+                              "Connection: close\r\n"
+                              "X-Content-Type-Options: nosniff\r\n"
+                              "%s"
+                              "\r\n",
+                              mime_for(real), (long long)st.st_size, cookie);
+            if (hl < 0 || send_all(fd, hdr, (size_t)hl) != 0) {
+                close(f);
+                free(rootr);
+                free(real);
+                return;
+            }
+        }
+    }
+    if (!head_only) {
+        char buf[4096];
+        ssize_t r;
+        while ((r = read(f, buf, sizeof(buf))) > 0) {
+            if (send_all(fd, buf, (size_t)r) != 0)
+                break;
+        }
+    }
+    close(f);
+    free(rootr);
+    free(real);
+}
+
+/* Хвост лога агента. В soft-режиме лог на диск не пишется — отдаём пояснение. */
+static void serve_log(int fd, const susanin_config *cfg, const char *query, int head_only)
+{
+    const char *path = "/opt/susanin/var/susanin.log";
+    int want = 200, f;
+    off_t sz;
+    size_t cap = 65536, start, i;
+    char *buf;
+    ssize_t r;
+    const char *out;
+    size_t outlen;
+
+    if (!strcmp(cfg->disk_mode, "soft")) {
+        reply_text(fd, 200, "log disabled (disk_mode=soft)", head_only);
+        return;
+    }
+    if (query) {
+        const char *p = strstr(query, "lines=");
+        if (p) {
+            int v = atoi(p + 6);
+            if (v > 0 && v <= 1000)
+                want = v;
+        }
+    }
+    f = open(path, O_RDONLY);
+    if (f < 0) {
+        reply_text(fd, 200, "(no log file)", head_only);
+        return;
+    }
+    sz = lseek(f, 0, SEEK_END);
+    start = (sz > (off_t)cap) ? (size_t)(sz - (off_t)cap) : 0;
+    if (lseek(f, (off_t)start, SEEK_SET) < 0) {
+        close(f);
+        reply_text(fd, 200, "(log read error)", head_only);
+        return;
+    }
+    buf = malloc(cap + 1);
+    if (!buf) {
+        close(f);
+        reply_text(fd, 500, "oom", head_only);
+        return;
+    }
+    r = read(f, buf, cap);
+    close(f);
+    if (r < 0)
+        r = 0;
+    buf[r] = '\0';
+
+    {
+        size_t nl = 0;
+        for (i = 0; i < (size_t)r; i++)
+            if (buf[i] == '\n')
+                nl++;
+        if (nl <= (size_t)want) {
+            out = buf;
+            outlen = (size_t)r;
+        } else {
+            size_t skip = nl - (size_t)want, seen = 0, pos = 0;
+            for (i = 0; i < (size_t)r; i++) {
+                if (buf[i] == '\n') {
+                    seen++;
+                    if (seen == skip) {
+                        pos = i + 1;
+                        break;
+                    }
+                }
+            }
+            out = buf + pos;
+            outlen = (size_t)r - pos;
+        }
+    }
+    reply(fd, 200, "text/plain; charset=utf-8", out, outlen, head_only);
+    free(buf);
+}
+
+/* Cookie-значение с токеном: символы вроде ';', ' ' или ',' сломали бы
+ * Set-Cookie, поэтому кодируем их %XX (и декодируем при чтении). */
+static int cookie_hex(int c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    return -1;
+}
+
+static void cookie_encode(const char *s, char *out, size_t n)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t j = 0;
+    for (; *s && j + 1 < n; s++) {
+        unsigned char c = (unsigned char)*s;
+        int safe = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                   (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+                   c == '.' || c == '~';
+        if (safe) {
+            out[j++] = (char)c;
+        } else {
+            if (j + 3 >= n)
+                break;
+            out[j++] = '%';
+            out[j++] = hex[c >> 4];
+            out[j++] = hex[c & 15];
+        }
+    }
+    out[j] = '\0';
+}
+
+static void cookie_decode(char *s)
+{
+    char *r = s, *w = s;
+    while (*r) {
+        if (r[0] == '%' && r[1] && r[2]) {
+            int hi = cookie_hex((unsigned char)r[1]);
+            int lo = cookie_hex((unsigned char)r[2]);
+            if (hi >= 0 && lo >= 0) {
+                *w++ = (char)((hi << 4) | lo);
+                r += 3;
+                continue;
+            }
+        }
+        *w++ = *r++;
+    }
+    *w = '\0';
+}
+
+/* Сравнение токена за постоянное время: длина и байты, без раннего выхода по
+ * первому несовпадению (иначе токен можно подбирать по времени ответа). */
+static int token_eq(const char *a, const char *b)
+{
+    size_t la = strlen(a), lb = strlen(b);
+    unsigned char diff = (unsigned char)((la ^ lb) ? 1 : 0);
+    size_t i, n = la > lb ? la : lb;
+    for (i = 0; i < n; i++) {
+        unsigned char ca = (unsigned char)(i < la ? a[i] : 0);
+        unsigned char cb = (unsigned char)(i < lb ? b[i] : 0);
+        diff |= (unsigned char)(ca ^ cb);
+    }
+    return diff == 0;
+}
+
+/* Значение заголовка запроса: ищем "Name:" ТОЛЬКО в блоке заголовков (до пустой
+ * строки), а не по всему запросу — иначе искомую строку можно подсунуть в URL
+ * или тело и «пройти» проверку. 1 = заголовок найден. */
+static int header_value(const char *req, const char *name, char *out, size_t n)
+{
+    size_t nl = strlen(name);
+    const char *p = strstr(req, "\r\n");       /* первая строка — request line */
+    const char *end = strstr(req, "\r\n\r\n");
+    if (!p)
+        return 0;
+    p += 2;
+    if (!end)
+        end = req + strlen(req);
+    while (p < end) {
+        const char *eol = strstr(p, "\r\n");
+        size_t i = 0;
+        if (!eol || eol > end)
+            eol = end;
+        if ((size_t)(eol - p) > nl && p[nl] == ':' && !strncasecmp(p, name, nl)) {
+            const char *v = p + nl + 1;
+            while (v < eol && (*v == ' ' || *v == '\t'))
+                v++;
+            while (v < eol && i + 1 < n)
+                out[i++] = *v++;
+            while (i && (out[i - 1] == ' ' || out[i - 1] == '\t'))
+                i--;
+            out[i] = '\0';
+            return 1;
+        }
+        p = eol + 2;
+    }
+    return 0;
+}
+
+/* Значение cookie по имени (из заголовка Cookie). 1 = найдено. */
+static int cookie_value(const char *req, const char *name, char *out, size_t n)
+{
+    char hdr[1024];
+    const char *p;
+    size_t nl = strlen(name);
+    if (!header_value(req, "Cookie", hdr, sizeof(hdr)))
+        return 0;
+    p = hdr;
+    while (*p) {
+        while (*p == ' ' || *p == ';' || *p == '\t')
+            p++;
+        if (!strncmp(p, name, nl) && p[nl] == '=') {
+            size_t i = 0;
+            p += nl + 1;
+            while (*p && *p != ';' && i + 1 < n)
+                out[i++] = *p++;
+            out[i] = '\0';
+            cookie_decode(out);
+            return 1;
+        }
+        p = strchr(p, ';');
+        if (!p)
+            break;
+    }
+    return 0;
+}
+
+static int token_ok(const susanin_config *cfg, const char *req, const char *query,
+                    int is_write, int *via_query)
+{
+    char need[128];
+    const char *tok = cfg->web_token;
+
+    if (via_query)
+        *via_query = 0;
+
+    /* Токен не задан — доступ без пароля (только LAN), как в прежних сборках.
+     * Это осознанный выбор пользователя: предупреждение пишется в лог на старте. */
+    if (!tok[0])
+        return 1;
+
+    if (header_value(req, "X-Auth-Token", need, sizeof(need)) && token_eq(need, tok))
+        return 1;
+    if (cookie_value(req, "susanin_token", need, sizeof(need)) && token_eq(need, tok))
+        return 1;
+
+    /* ?token= принимаем ТОЛЬКО для первичного GET: панель сохраняет его в
+     * localStorage и дальше шлёт заголовком. Для изменяющих запросов query не
+     * принимаем — он попадает в историю браузера, referer и логи.
+     * via_query сообщает вызывающему, что токен пришёл из URL: тогда в ответ
+     * на статику ставим cookie, иначе браузер не приложит токен к style.css
+     * и app.js (у <link>/<script> нет заголовков). */
+    if (!is_write && query) {
+        const char *p = strstr(query, "token=");
+        if (p) {
+            size_t i = 0;
+            p += 6;
+            while (p[i] && p[i] != '&' && i + 1 < sizeof(need)) {
+                need[i] = p[i];
+                i++;
+            }
+            need[i] = '\0';
+            if (token_eq(need, tok)) {
+                if (via_query)
+                    *via_query = 1;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* --- W3: действия (POST) --------------------------------------- */
+
+static void json_ok(int fd, const char *extra)
+{
+    char b[1024];
+    int n = snprintf(b, sizeof(b), "{\"ok\":true%s%s}", extra ? "," : "", extra ? extra : "");
+    if (n < 0)
+        n = 0;
+    reply(fd, 200, "application/json; charset=utf-8", b, (size_t)n, 0);
+}
+
+static void json_err(int fd, const char *msg)
+{
+    char b[512], esc[256];
+    const char *s = msg ? msg : "";
+    size_t j = 0;
+    for (; *s && j + 1 < sizeof(esc); s++) {
+        if (*s == '"' || *s == '\\')
+            esc[j++] = '\\';
+        if (*s == '\n')
+            continue;
+        esc[j++] = *s;
+    }
+    esc[j] = '\0';
+    {
+        int n = snprintf(b, sizeof(b), "{\"ok\":false,\"error\":\"%s\"}", esc);
+        if (n < 0)
+            n = 0;
+        reply(fd, 200, "application/json; charset=utf-8", b, (size_t)n, 0);
+    }
+}
+
+static int hexval(int c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Значение form-urlencoded-параметра key из тела запроса. */
+static int form_get(const char *body, const char *key, char *out, size_t n)
+{
+    size_t klen = strlen(key);
+    const char *p = body;
+    if (!n)
+        return 0;
+    out[0] = '\0';
+    while (p && *p) {
+        const char *amp = strchr(p, '&');
+        size_t seg = amp ? (size_t)(amp - p) : strlen(p);
+        const char *eq = memchr(p, '=', seg);
+        if (eq && (size_t)(eq - p) == klen && !strncmp(p, key, klen)) {
+            const char *v = eq + 1;
+            size_t vlen = (size_t)((p + seg) - v), i = 0, j = 0;
+            while (i < vlen && j + 1 < n) {
+                char c = v[i++];
+                if (c == '+') {
+                    c = ' ';
+                } else if (c == '%' && i + 1 < vlen) {
+                    int h = hexval((unsigned char)v[i]);
+                    int l = hexval((unsigned char)v[i + 1]);
+                    if (h >= 0 && l >= 0) {
+                        c = (char)((h << 4) | l);
+                        i += 2;
+                    }
+                }
+                out[j++] = c;
+            }
+            out[j] = '\0';
+            return 1;
+        }
+        p = amp ? amp + 1 : NULL;
+    }
+    return 0;
+}
+
+/* Разбор одной form-пары "k=v" (значения URL-декодируются). */
+static int pair_get(const char *p, size_t seg, char *k, size_t ksz, char *v, size_t vsz)
+{
+    const char *eq = memchr(p, '=', seg);
+    size_t n, i, j, vn;
+    const char *vv;
+
+    if (!eq || !ksz || !vsz)
+        return 0;
+    n = (size_t)(eq - p);
+    j = 0;
+    for (i = 0; i < n && j + 1 < ksz; i++) {
+        char c = p[i];
+        if (c == '+') {
+            c = ' ';
+        } else if (c == '%' && i + 2 < n) {
+            int h = hexval((unsigned char)p[i + 1]);
+            int l = hexval((unsigned char)p[i + 2]);
+            if (h >= 0 && l >= 0) { c = (char)((h << 4) | l); i += 2; }
+        }
+        k[j++] = c;
+    }
+    k[j] = '\0';
+
+    vv = eq + 1;
+    vn = seg - n - 1;
+    j = 0;
+    for (i = 0; i < vn && j + 1 < vsz; i++) {
+        char c = vv[i];
+        if (c == '+') {
+            c = ' ';
+        } else if (c == '%' && i + 2 < vn) {
+            int h = hexval((unsigned char)vv[i + 1]);
+            int l = hexval((unsigned char)vv[i + 2]);
+            if (h >= 0 && l >= 0) { c = (char)((h << 4) | l); i += 2; }
+        }
+        v[j++] = c;
+    }
+    v[j] = '\0';
+    return 1;
+}
+
+/* Что можно править через /api/config. Секрет web_token менять нельзя;
+ * web_listen не должен стать 0.0.0.0 (иначе веб не поднимется). */
+static int all_digits(const char *s)
+{
+    if (!s || !*s)
+        return 0;
+    for (; *s; s++)
+        if (*s < '0' || *s > '9')
+            return 0;
+    return 1;
+}
+
+/* profileN_<field>, N=1..4. Пустое значение = «не задан» (разрешено). */
+static int profile_field_ok(const char *k, const char *v)
+{
+    const char *fld;
+    if (strncmp(k, "profile", 7) != 0 || k[7] < '1' || k[7] > '4' || k[8] != '_')
+        return 0;
+    fld = k + 9;
+    if (!strcmp(fld, "name")) {
+        for (; *v; v++)
+            if (!((*v >= 'a' && *v <= 'z') || (*v >= '0' && *v <= '9') || *v == '_'))
+                return 0;
+        return 1;
+    }
+    if (!strcmp(fld, "egress")) {
+        for (; *v; v++)
+            if (!((*v >= 'a' && *v <= 'z') || (*v >= '0' && *v <= '9') ||
+                  *v == '_' || *v == '.' || *v == '-'))
+                return 0;
+        return 1;
+    }
+    if (!strcmp(fld, "list")) {
+        if (!*v)
+            return 1;               /* пусто = не задан */
+        if (v[0] != '/')
+            return 0;               /* только абсолютный путь */
+        if (strstr(v, ".."))
+            return 0;               /* без '..' */
+        for (; *v; v++) {
+            char c = *v;
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '/' || c == '.' || c == '_' || c == '-'))
+                return 0;
+        }
+        return 1;
+    }
+    if (!strcmp(fld, "table"))
+        return (!*v) || (all_digits(v) && atoi(v) > 0 && atoi(v) < 256);
+    if (!strcmp(fld, "mark")) {
+        if (!*v)
+            return 1;
+        if (v[0] != '0' || (v[1] != 'x' && v[1] != 'X'))
+            return 0;
+        v += 2;
+        if (!*v || strlen(v) > 8)
+            return 0;
+        for (; *v; v++)
+            if (!((*v >= '0' && *v <= '9') || (*v >= 'a' && *v <= 'f') || (*v >= 'A' && *v <= 'F')))
+                return 0;
+        return 1;
+    }
+    return 0;
+}
+
+/* Ключи, которые web РАЗРЕШЕНО создавать в susanin.conf, если их там нет.
+ * Раньше — только profileN_*, из-за чего переключатели/поля, отсутствующие в
+ * старом конфиге, молча не сохранялись (панель показывала прежнее значение).
+ * Теперь можно создать любой ключ с корректным именем, кроме web_token и
+ * web_listen (у них особая валидация). */
+static int key_creatable(const char *k)
+{
+    if (!config_key_name_ok(k))
+        return 0;
+    if (!strcmp(k, "web_token") || !strcmp(k, "web_listen"))
+        return 0;
+    return 1;
+}
+
+static int config_value_ok(const char *k, const char *v)
+{
+    if (!strcmp(k, "web_token")) {
+        /* Токен теперь правится через панель. Значение — write-only: GET его не
+         * отдаёт. Пусто = доступ без пароля (только LAN). */
+        if (strlen(v) > 63)
+            return 0;
+        for (; *v; v++) {
+            unsigned char c = (unsigned char)*v;
+            if (c < 0x20 || c == 0x7f)
+                return 0;
+        }
+        return 1;
+    }
+    if (!strcmp(k, "web_listen")) {
+        struct in_addr a;
+        if (!v[0] || !strcmp(v, "0.0.0.0") || inet_pton(AF_INET, v, &a) != 1)
+            return 0;
+        return 1;
+    }
+    /* Только реальные поля профиля: profileN_<поле>, N=1..4. Общий ключ
+     * profile_failover (он один на все профили) под этот шаблон не подходит —
+     * раньше он уходил в skipped, и панель не могла сохранить его вообще. */
+    if (strncmp(k, "profile", 7) == 0 && k[7] >= '1' && k[7] <= '4' && k[8] == '_')
+        return profile_field_ok(k, v);
+    return 1;
+}
+
+/* Это процесс нашего агента (а не просто «pid из файла»)? Читаем
+ * /proc/<pid>/cmdline: NUL-разделители заменяем пробелами и ищем
+ * «susanin-agent» + « run». Нужно, чтобы не послать SIGHUP чужому процессу,
+ * которому достался переиспользованный pid. */
+static int pid_is_agent(long pid)
+{
+    char path[64], buf[512];
+    ssize_t r;
+    int f, i;
+    snprintf(path, sizeof(path), "/proc/%ld/cmdline", pid);
+    f = open(path, O_RDONLY);
+    if (f < 0)
+        return 0;
+    r = read(f, buf, sizeof(buf) - 1);
+    close(f);
+    if (r <= 0)
+        return 0;
+    buf[r] = '\0';
+    for (i = 0; i < (int)r; i++)
+        if (buf[i] == '\0')
+            buf[i] = ' ';
+    return strstr(buf, "susanin-agent") != NULL && strstr(buf, " run") != NULL;
+}
+
+/* Запасной поиск агента по /proc (pid-файла может не быть после ручного
+ * запуска или старой версии). */
+static long find_agent_pid(void)
+{
+    DIR *d = opendir("/proc");
+    struct dirent *e;
+    long found = 0;
+    if (!d)
+        return 0;
+    while ((e = readdir(d)) != NULL) {
+        char *end;
+        long pid = strtol(e->d_name, &end, 10);
+        if (*end || pid <= 0)
+            continue;
+        if (pid_is_agent(pid)) {
+            found = pid;
+            break;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+static int signal_agent(int sig, char *err, size_t errsz)
+{
+    FILE *f = fopen("/opt/susanin/var/susanin-agent.pid", "r");
+    long pid = 0;
+    if (f) {
+        if (fscanf(f, "%ld", &pid) != 1)
+            pid = 0;
+        fclose(f);
+    }
+    if (pid > 0 && !pid_is_agent(pid))
+        pid = 0;                 /* pid переиспользован другим процессом */
+    if (pid <= 0)
+        pid = find_agent_pid();
+    if (pid <= 0) {
+        snprintf(err, errsz, "агент не запущен (pid не найден)");
+        return -1;
+    }
+    if (kill((pid_t)pid, sig) != 0) {
+        snprintf(err, errsz, "kill: %s", strerror(errno));
+        return -1;
+    }
+    return 0;
+}
+
+/* Последняя непустая строка вывода скрипта (action.log): панель покажет её в
+ * ошибке, иначе «restart failed» ничего не объясняет. */
+static void script_tail(char *out, size_t n)
+{
+    int f;
+    char buf[400];
+    ssize_t r;
+    off_t sz;
+    size_t i;
+    out[0] = '\0';
+    f = open("/opt/susanin/var/action.log", O_RDONLY);
+    if (f < 0)
+        return;
+    sz = lseek(f, 0, SEEK_END);
+    if (sz > (off_t)sizeof(buf) - 1)
+        lseek(f, sz - (off_t)(sizeof(buf) - 1), SEEK_SET);
+    r = read(f, buf, sizeof(buf) - 1);
+    close(f);
+    if (r <= 0)
+        return;
+    buf[r] = '\0';
+    /* Берём последнюю строку, переводы строк заменяем на пробелы. */
+    {
+        char *p = strrchr(buf, '\n');
+        if (p && p[1])
+            memmove(buf, p + 1, strlen(p + 1) + 1);
+    }
+    for (i = 0; buf[i]; i++) {
+        if (buf[i] == '\n' || buf[i] == '\r')
+            buf[i] = ' ';
+    }
+    {
+        size_t len = strlen(buf);
+        if (len >= n)
+            len = n - 1;
+        memcpy(out, buf, len);
+        out[len] = '\0';
+    }
+}
+
+static int run_script(const char *arg)
+{
+    struct sigaction sa, old;
+    int have_old;
+    pid_t p;
+    int rc = -1;
+
+    /* Родительский процесс web ставит SIGCHLD в SIG_IGN (дети-обработчики
+     * соединений), а этот код выполняется в ребёнке. С унаследованным SIG_IGN
+     * ядро само «съедает» статус нашего дочернего процесса, и waitpid() падает с
+     * ECHILD — отсюда были «restart failed / rescan failed (rc=-1)» при
+     * фактически успешном действии. На время запуска скрипта возвращаем SIG_DFL. */
+    have_old = (sigaction(SIGCHLD, NULL, &old) == 0);
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGCHLD, &sa, NULL);
+
+    p = fork();
+    if (p == 0) {
+        int dn = open("/opt/susanin/var/action.log",
+                      O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (dn >= 0) {
+            dup2(dn, 1);
+            dup2(dn, 2);
+            close(dn);
+        }
+        execl("/bin/sh", "sh", "/opt/susanin/tools/susanin.sh", arg, (char *)NULL);
+        _exit(127);
+    }
+    if (p > 0) {
+        int st;
+        if (waitpid(p, &st, 0) >= 0)
+            rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    }
+    if (have_old)
+        sigaction(SIGCHLD, &old, NULL);
+    return rc;
+}
+
+static int valid_entry(const char *s)
+{
+    if (!s || !*s || strlen(s) > 253)
+        return 0;
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (!(isalnum(c) || c == '.' || c == '-' || c == '_' || c == ':' ||
+              c == '/' || c == '*'))
+            return 0;
+    }
+    return 1;
+}
+
+/* Копирование файла (для бэкапа списка). Права исходного сохраняем. */
+static int copy_file(const char *src, const char *dst)
+{
+    FILE *s = fopen(src, "rb");
+    FILE *d;
+    struct stat st;
+    int c, rc = 0;
+
+    if (!s)
+        return -1;
+    d = fopen(dst, "wb");
+    if (!d) {
+        fclose(s);
+        return -1;
+    }
+    while ((c = fgetc(s)) != EOF) {
+        if (fputc(c, d) == EOF) {
+            rc = -1;
+            break;
+        }
+    }
+    fclose(s);
+    if (fclose(d) != 0)
+        rc = -1;
+    if (stat(src, &st) == 0)
+        chmod(dst, st.st_mode & 07777);
+    return rc;
+}
+
+/* Имя старого формата бэкапа: <base>.bak-YYYYMMDD-HHMMSS. До 0.4.0-dev7 такие
+ * копии накапливались десятками — правка одной строки плодила новый файл. */
+static int old_bak_name(const char *name, const char *base, size_t blen)
+{
+    const char *p = name;
+    size_t i;
+
+    if (strncmp(p, base, blen) != 0)
+        return 0;
+    p += blen;
+    if (strncmp(p, ".bak-", 5) != 0)
+        return 0;
+    p += 5;
+    for (i = 0; i < 8; i++)
+        if (!isdigit((unsigned char)p[i]))
+            return 0;
+    if (p[8] != '-')
+        return 0;
+    for (i = 9; i < 15; i++)
+        if (!isdigit((unsigned char)p[i]))
+            return 0;
+    return p[15] == '\0';
+}
+
+/* Убрать накопленные <path>.bak-<дата> рядом со списком (одноразовая уборка). */
+static void list_bak_cleanup(const char *path)
+{
+    char dir[600], base[600];
+    const char *slash;
+    DIR *dp;
+    struct dirent *de;
+    size_t blen, dl;
+
+    slash = strrchr(path, '/');
+    if (slash) {
+        dl = (size_t)(slash - path);
+        if (dl == 0)
+            dl = 1;                     /* "/list.txt" — каталог "/" */
+        if (dl >= sizeof(dir))
+            return;
+        memcpy(dir, path, dl);
+        dir[dl] = '\0';
+        snprintf(base, sizeof(base), "%s", slash + 1);
+    } else {
+        snprintf(dir, sizeof(dir), ".");
+        snprintf(base, sizeof(base), "%s", path);
+    }
+    blen = strlen(base);
+    if (!blen)
+        return;
+    dp = opendir(dir);
+    if (!dp)
+        return;
+    while ((de = readdir(dp)) != NULL) {
+        char victim[1300];
+        if (!old_bak_name(de->d_name, base, blen))
+            continue;
+        if (snprintf(victim, sizeof(victim), "%s/%s", dir, de->d_name) < 0)
+            continue;
+        remove(victim);
+    }
+    closedir(dp);
+}
+
+/* add=1 — добавить строку, add=0 — удалить.
+ * Бэкап — ОДИН файл <list>.bak: перезаписывается поверх и только при фактическом
+ * изменении содержимого, копии <list>.bak-<дата> больше не плодятся. */
+static int list_edit(const char *path, const char *val, int add,
+                     char *err, size_t errsz)
+{
+    char bak[600], tmp[600], line[512];
+    FILE *in, *out;
+    int found = 0, changed = 0, last_nl = 1;
+
+    snprintf(bak, sizeof(bak), "%s.bak", path);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+
+    in = fopen(path, "r");
+    out = fopen(tmp, "w");
+    if (!out) {
+        if (in)
+            fclose(in);
+        snprintf(err, errsz, "cannot write list file");
+        return -1;
+    }
+    if (in) {
+        while (fgets(line, sizeof(line), in)) {
+            char orig[sizeof(line)];
+            char *p = line, *e;
+            /* Сохраняем ИСХОДНУЮ строку (с переводом строки). Сравнение делаем
+             * по обрезанной копии, а пишем обратно оригинал — иначе теряются
+             * концы строк и файл «склеивается» в одну строку. */
+            snprintf(orig, sizeof(orig), "%s", line);
+            while (*p == ' ' || *p == '\t')
+                p++;
+            e = p + strlen(p);
+            while (e > p && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' ' || e[-1] == '\t'))
+                *--e = '\0';
+            if (!strcmp(p, val)) {
+                found = 1;
+                if (add) {
+                    fputs(orig, out);
+                    last_nl = (orig[0] && orig[strlen(orig) - 1] == '\n');
+                } else {
+                    changed = 1; /* строку пропускаем */
+                }
+                continue;
+            }
+            fputs(orig, out);
+            last_nl = (orig[0] && orig[strlen(orig) - 1] == '\n');
+        }
+        fclose(in);
+    }
+    if (add && !found) {
+        if (!last_nl)
+            fputc('\n', out);
+        fprintf(out, "%s\n", val);
+        changed = 1;
+    }
+    fclose(out);
+    if (changed) {
+        copy_file(path, bak);   /* один бэкап, поверх прежнего */
+        list_bak_cleanup(path); /* и уборка копий старого формата */
+        rename(tmp, path);
+    } else {
+        remove(tmp);
+    }
+    return changed ? 1 : 0;
+}
+
+/* Равны ли два файла побайтово (для «бэкап только при фактическом изменении»). */
+static int files_equal(const char *a, const char *b)
+{
+    FILE *fa = fopen(a, "rb"), *fb;
+    int ca, cb, same = 1;
+
+    if (!fa)
+        return 0;                  /* списка нет — считаем, что запись новая */
+    fb = fopen(b, "rb");
+    if (!fb) {
+        fclose(fa);
+        return 0;
+    }
+    for (;;) {
+        ca = fgetc(fa);
+        cb = fgetc(fb);
+        if (ca != cb) {
+            same = 0;
+            break;
+        }
+        if (ca == EOF)
+            break;
+    }
+    fclose(fa);
+    fclose(fb);
+    return same;
+}
+
+/* Полная перезапись списка (Memo-редактор). Построчно: пустые строки и
+ * '#'-комментарии сохраняем, валидные записи — через valid_entry(), битые
+ * строки отбрасываем и считаем (панель показывает предупреждение). Запись
+ * атомарная (.tmp + rename), бэкап — один <list>.bak (как в list_edit). */
+static int list_replace(const char *path, const char *text, int *kept,
+                        int *dropped, char *err, size_t errsz)
+{
+    char tmp[600], bak[600];
+    FILE *out;
+    const char *p = text;
+    int lines = 0;
+
+    *kept = 0;
+    *dropped = 0;
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    snprintf(bak, sizeof(bak), "%s.bak", path);
+
+    out = fopen(tmp, "w");
+    if (!out) {
+        snprintf(err, errsz, "cannot write list file");
+        return -1;
+    }
+    while (p && *p) {
+        const char *nl = strchr(p, '\n');
+        size_t raw = nl ? (size_t)(nl - p) : strlen(p);
+        char line[512];
+        size_t l;
+
+        if (raw >= sizeof(line)) {
+            /* Строка длиннее буфера — обрезать её нельзя (испортили бы запись). */
+            (*dropped)++;
+        } else {
+            memcpy(line, p, raw);
+            line[raw] = '\0';
+            l = raw;
+            while (l && (line[l - 1] == '\r' || line[l - 1] == ' ' || line[l - 1] == '\t'))
+                line[--l] = '\0';
+            {
+                char *q = line;
+                while (*q == ' ' || *q == '\t')
+                    q++;
+                if (*q == '\0')
+                    fputs("\n", out);
+                else if (*q == '#')
+                    fprintf(out, "%s\n", q);      /* комментарий сохраняем */
+                else if (valid_entry(q)) {
+                    fprintf(out, "%s\n", q);
+                    (*kept)++;
+                } else {
+                    (*dropped)++;
+                }
+            }
+        }
+        lines++;
+        if (lines >= MAX_LIST_LINES) {
+            (*dropped)++;               /* лимит строк: остальное не принимаем */
+            break;
+        }
+        if (!nl)
+            break;
+        p = nl + 1;
+    }
+    if (fclose(out) != 0) {
+        remove(tmp);
+        snprintf(err, errsz, "cannot write list file");
+        return -1;
+    }
+    /* Ничего не изменилось — не трогаем ни список, ни бэкап (как в list_edit:
+     * бэкап пишется только при фактическом изменении). */
+    if (files_equal(path, tmp)) {
+        remove(tmp);
+        return 0;
+    }
+    copy_file(path, bak);       /* один бэкап, поверх прежнего */
+    list_bak_cleanup(path);     /* уборка копий старого формата */
+    if (rename(tmp, path) != 0) {
+        remove(tmp);
+        snprintf(err, errsz, "cannot replace list file");
+        return -1;
+    }
+    return 0;
+}
+
+/* Имя списка из query (?name=vpn_always) и путь к нему из конфига. */
+static const char *list_path_from_query(const susanin_config *cfg, const char *query,
+                                        char *name, size_t namesz)
+{
+    if (namesz)
+        name[0] = '\0';
+    if (query) {
+        const char *p = strstr(query, "name=");
+        if (p) {
+            size_t i = 0;
+            p += 5;
+            while (p[i] && p[i] != '&' && i + 1 < namesz) {
+                name[i] = p[i];
+                i++;
+            }
+            name[i] = '\0';
+        }
+    }
+    if (!strcmp(name, "vpn_always"))
+        return cfg->vpn_always_file;
+    if (!strcmp(name, "vpn_never"))
+        return cfg->vpn_never_file;
+    return NULL;
+}
+
+/* GET /api/choices — «известные системе» значения для панели (интерфейсы,
+ * подсети, таблицы, метки, файлы списков профилей). Ничего не найдено —
+ * пустые массивы и код 200; отказ любого источника не является ошибкой.
+ * Если JSON не влез в буфер, wc_write_json() вернёт 0 — тогда отдаём пустой
+ * объект: битый JSON панель не разберёт. */
+static void serve_choices(int fd, const susanin_config *cfg, int head_only)
+{
+    size_t cap = MAX_BODY * 2;
+    char *jb = malloc(cap);
+    size_t n;
+
+    if (!jb) {
+        reply_text(fd, 500, "oom", head_only);
+        return;
+    }
+    n = wc_write_json(cfg, ops_default_conf_path(), "/sys/class/net",
+                      wc_list_dir(), jb, cap);
+    if (n == 0) {
+        static const char empty[] =
+            "{\"ifaces\":[],\"subnets\":[],\"tables\":[],\"used_marks\":[],"
+            "\"marks\":[],\"lists\":[],\"list_dir\":\"\",\"free_mark_index\":0}";
+        reply(fd, 200, "application/json; charset=utf-8", empty,
+              sizeof(empty) - 1, head_only);
+        free(jb);
+        return;
+    }
+    reply(fd, 200, "application/json; charset=utf-8", jb, n, head_only);
+    free(jb);
+}
+
+static void handle_action(int fd, const susanin_config *cfg, const char *target,
+                          const char *query, const char *body)
+{
+    char a[CFG_PATH_MAX], b[128], err[160];
+
+    if (!strcmp(target, "/api/reset") || !strcmp(target, "/api/forget")) {
+        if (!form_get(body, "ip", a, sizeof(a)) || !a[0]) { json_err(fd, "value required"); return; }
+        ops_reset(cfg, a);
+        json_ok(fd, "\"action\":\"reset\"");
+        return;
+    }
+    if (!strcmp(target, "/api/reload")) {
+        if (signal_agent(SIGHUP, err, sizeof(err)) != 0) { json_err(fd, err); return; }
+        json_ok(fd, "\"action\":\"reload\"");
+        return;
+    }
+    if (!strcmp(target, "/api/config")) {
+        const char *p = body;
+        int applied = 0, skipped = 0;
+        char bad[64] = "";
+        char skipjson[512];
+        size_t sk = 0;
+        skipjson[0] = '\0';
+        while (p && *p) {
+            const char *amp = strchr(p, '&');
+            size_t seg = amp ? (size_t)(amp - p) : strlen(p);
+            char k[64], v[512];
+            if (seg && pair_get(p, seg, k, sizeof(k), v, sizeof(v)) && k[0]) {
+                if (config_value_ok(k, v) &&
+                    config_file_set(ops_default_conf_path(), k, v, key_creatable(k)) == 0) {
+                    applied++;
+                } else {
+                    /* Панель должна знать, что ключ не сохранён: иначе «Сохранено»
+                     * показывается, а значение остаётся прежним. */
+                    if (!bad[0])
+                        snprintf(bad, sizeof(bad), "%s", k);
+                    if (sk + strlen(k) + 8 < sizeof(skipjson)) {
+                        sk += (size_t)snprintf(skipjson + sk, sizeof(skipjson) - sk,
+                                               "%s\"%s\"", skipped ? "," : "", k);
+                        skipped++;
+                    }
+                }
+            }
+            p = amp ? amp + 1 : NULL;
+        }
+        if (applied > 0) {
+            char e2[128];
+            char extra[600];
+            signal_agent(SIGHUP, e2, sizeof(e2));
+            if (skipped)
+                snprintf(extra, sizeof(extra),
+                         "\"action\":\"config\",\"skipped\":[%s]", skipjson);
+            else
+                snprintf(extra, sizeof(extra), "\"action\":\"config\"");
+            json_ok(fd, extra);
+        } else {
+            char e[128];
+            snprintf(e, sizeof(e), "no updatable keys (%s)", bad[0] ? bad : "none");
+            json_err(fd, e);
+        }
+        return;
+    }
+    if (!strcmp(target, "/api/rescan")) {
+        int rc = run_script("rescan");
+        if (rc != 0) {
+            char tail[200], msg[320];
+            script_tail(tail, sizeof(tail));
+            snprintf(msg, sizeof(msg), "rescan failed (rc=%d)%s%s", rc,
+                     tail[0] ? ": " : "", tail);
+            json_err(fd, msg);
+            return;
+        }
+        json_ok(fd, "\"action\":\"rescan\"");
+        return;
+    }
+    if (!strcmp(target, "/api/restart")) {
+        int rc = run_script("restart");
+        if (rc != 0) {
+            char tail[200], msg[320];
+            script_tail(tail, sizeof(tail));
+            snprintf(msg, sizeof(msg), "restart failed (rc=%d)%s%s", rc,
+                     tail[0] ? ": " : "", tail);
+            json_err(fd, msg);
+            return;
+        }
+        json_ok(fd, "\"action\":\"restart\"");
+        return;
+    }
+    if (!strcmp(target, "/api/list/save")) {
+        /* Полная перезапись списка (Memo-редактор): тело запроса — новый текст
+         * списка (text/plain, без form-кодирования), имя списка — в query.
+         * Пустые строки и '#'-комментарии сохраняются, битые строки отбрасываются
+         * (в ответе — сколько принято и сколько отброшено). */
+        const char *path = NULL;
+        char name[32] = "";
+        int kept = 0, dropped = 0, r;
+        path = list_path_from_query(cfg, query, name, sizeof(name));
+        if (!path || !path[0]) { json_err(fd, "bad list"); return; }
+        r = list_replace(path, body, &kept, &dropped, err, sizeof(err));
+        if (r < 0) { json_err(fd, err); return; }
+        {
+            char extra[160];
+            signal_agent(SIGHUP, err, sizeof(err));
+            snprintf(extra, sizeof(extra),
+                     "\"action\":\"list\",\"list\":\"%s\",\"kept\":%d,\"dropped\":%d",
+                     name, kept, dropped);
+            json_ok(fd, extra);
+        }
+        return;
+    }
+    if (!strcmp(target, "/api/list")) {
+        char op[8];
+        const char *path = NULL;
+        form_get(body, "list", b, sizeof(b));
+        if (!strcmp(b, "vpn_always"))
+            path = cfg->vpn_always_file;
+        else if (!strcmp(b, "vpn_never"))
+            path = cfg->vpn_never_file;
+        if (!path || !path[0]) { json_err(fd, "bad list"); return; }
+        if (!form_get(body, "value", a, sizeof(a)) || !valid_entry(a)) { json_err(fd, "bad value"); return; }
+        if (!form_get(body, "op", op, sizeof(op))) { json_err(fd, "op required"); return; }
+        if (!strcmp(op, "add") || !strcmp(op, "del")) {
+            int r = list_edit(path, a, !strcmp(op, "add"), err, sizeof(err));
+            if (r < 0) { json_err(fd, err); return; }
+            signal_agent(SIGHUP, err, sizeof(err));
+            json_ok(fd, "\"action\":\"list\"");
+            return;
+        }
+        json_err(fd, "bad op");
+        return;
+    }
+    reply_text(fd, 404, "no such api", 0);
+}
+
+static void handle_conn(int fd, const susanin_config *cfg_in)
+{
+    susanin_config lcfg;
+    const susanin_config *cfg = cfg_in;
+    char req[REQ_MAX];
+    char method[8] = { 0 };
+    char target[1024] = { 0 };
+    char body[4096] = { 0 };
+    char *bodybig = NULL;               /* тело /api/list/save (до MAX_LIST_BODY) */
+    char *bodyp = body;
+    char *query = NULL;
+    size_t len = 0;
+    int head_only = 0;
+    int qauth = 0;                      /* токен пришёл в ?token= (GET/HEAD) */
+
+    /* Конфиг перечитываем на каждый запрос: правки web_token и параметров
+     * (в т.ч. через саму панель) применяются сразу, без перезапуска web. */
+    if (config_load(ops_default_conf_path(), &lcfg) == 0)
+        cfg = &lcfg;
+
+    while (len < sizeof(req) - 1) {
+        ssize_t r = recv(fd, req + len, sizeof(req) - 1 - len, 0);
+        if (r <= 0)
+            break;
+        len += (size_t)r;
+        req[len] = '\0';
+        if (strstr(req, "\r\n\r\n"))
+            break;
+    }
+    if (len == 0)
+        return;
+
+    {
+        char *nl = strchr(req, ' ');
+        char *sp, *t;
+        size_t ml, tl;
+        if (!nl) {
+            reply_text(fd, 400, "bad request", 0);
+            return;
+        }
+        ml = (size_t)(nl - req);
+        if (ml >= sizeof(method))
+            ml = sizeof(method) - 1;
+        memcpy(method, req, ml);
+        method[ml] = '\0';
+        t = nl + 1;
+        sp = strchr(t, ' ');
+        if (!sp) {
+            reply_text(fd, 400, "bad request", 0);
+            return;
+        }
+        tl = (size_t)(sp - t);
+        if (tl >= sizeof(target))
+            tl = sizeof(target) - 1;
+        memcpy(target, t, tl);
+        target[tl] = '\0';
+    }
+
+    if (!strcmp(method, "HEAD")) {
+        head_only = 1;
+    } else if (strcmp(method, "GET") != 0 && strcmp(method, "POST") != 0) {
+        reply_text(fd, 405, "method not allowed", 0);
+        return;
+    }
+
+    query = strchr(target, '?');
+    if (query) {
+        *query = '\0';
+        query++;
+    }
+
+    {
+        const char *cl = strstr(req, "Content-Length:");
+        if (!cl)
+            cl = strstr(req, "content-length:");
+        if (cl) {
+            int want = atoi(cl + 15);
+            char *end = strstr(req, "\r\n\r\n");
+            size_t hdrlen = end ? (size_t)(end - req) + 4 : len;
+            size_t have = (len > hdrlen) ? len - hdrlen : 0;
+            /* Полная перезапись списка (Memo) бывает больше 4 КБ — для неё читаем
+             * тело в отдельный буфер до MAX_LIST_BODY; для остальных запросов
+             * прежний лимит 4096. */
+            char *big = NULL;
+            size_t cap = sizeof(body);
+            if (want > 0 && (size_t)want >= sizeof(body) &&
+                !strcmp(target, "/api/list/save")) {
+                if ((size_t)want > MAX_LIST_BODY) {
+                    reply_text(fd, 413, "list body too large", head_only);
+                    return;
+                }
+                big = malloc(MAX_LIST_BODY + 1);
+                if (!big) {
+                    reply_text(fd, 500, "oom", head_only);
+                    return;
+                }
+                cap = MAX_LIST_BODY + 1;
+            }
+            {
+                char *bp = big ? big : body;
+                size_t need = (want > 0 && (size_t)want < cap) ? (size_t)want : 0;
+                int short_read;
+                if (have > need)
+                    have = need;
+                if (have)
+                    memcpy(bp, req + hdrlen, have);
+                while (have < need) {
+                    ssize_t rr = recv(fd, bp + have, need - have, 0);
+                    if (rr <= 0)
+                        break;
+                    have += (size_t)rr;
+                }
+                bp[have] = '\0';
+                /* Тело пришло не полностью (обрыв) — для ПОЛНОЙ перезаписи списка
+                 * это недопустимо: сохранили бы урезанный список. Отклоняем. */
+                short_read = (want > 0 && have < (size_t)want);
+                if (short_read && !strcmp(target, "/api/list/save")) {
+                    free(big);
+                    reply_text(fd, 400, "incomplete body (list not saved)", head_only);
+                    return;
+                }
+            }
+            if (big) {
+                bodybig = big;
+                bodyp = big;
+            }
+        }
+    }
+
+    if (!token_ok(cfg, req, query,
+                  strcmp(method, "GET") && strcmp(method, "HEAD"), &qauth)) {
+        free(bodybig);
+        /* Для путей /api/ отдаём JSON: панель разбирает ответ как JSON, а на
+         * текстовом теле показывала «Unexpected token 'r', … is not valid JSON». */
+        if (!strncmp(target, "/api/", 5)) {
+            char jb[128];
+            snprintf(jb, sizeof(jb), "{\"ok\":false,\"error\":\"unauthorized\"}");
+            reply(fd, 401, "application/json; charset=utf-8", jb, strlen(jb), head_only);
+        } else {
+            reply_text(fd, 401, "unauthorized", head_only);
+        }
+        return;
+    }
+
+    if (!strcmp(method, "POST")) {
+        handle_action(fd, cfg, target, query, bodyp);
+        free(bodybig);
+        return;
+    }
+
+    if (!strcmp(target, "/api/status")) {
+        char *jb = malloc(MAX_BODY);
+        if (!jb) {
+            reply_text(fd, 500, "oom", head_only);
+            return;
+        }
+        ops_status_json(cfg, ops_default_conf_path(), jb, MAX_BODY);
+        reply(fd, 200, "application/json; charset=utf-8", jb, strlen(jb), head_only);
+        free(jb);
+        return;
+    }
+    if (!strcmp(target, "/api/config")) {
+        char *jb = malloc(MAX_BODY);
+        if (!jb) {
+            reply_text(fd, 500, "oom", head_only);
+            return;
+        }
+        ops_config_json(cfg, ops_default_conf_path(), jb, MAX_BODY);
+        reply(fd, 200, "application/json; charset=utf-8", jb, strlen(jb), head_only);
+        free(jb);
+        return;
+    }
+    if (!strcmp(target, "/api/choices")) {
+        serve_choices(fd, cfg, head_only);
+        return;
+    }
+    if (!strcmp(target, "/api/log")) {
+        serve_log(fd, cfg, query, head_only);
+        return;
+    }
+    if (!strcmp(target, "/api/list/raw")) {
+        /* Сырой текст списка (с комментариями и пустыми строками) — для
+         * Memo-редактора: JSON-вариант /api/list отдаёт только записи. */
+        char name[32] = "";
+        const char *path = list_path_from_query(cfg, query, name, sizeof(name));
+        FILE *f;
+        char *buf;
+        size_t got;
+        if (!path || !path[0]) {
+            reply_text(fd, 400, "bad name", head_only);
+            return;
+        }
+        /* Файл больше лимита редактора отдавать нельзя: панель показала бы
+         * обрезанный текст, а сохранение молча отрезало бы хвост списка. */
+        {
+            struct stat st;
+            if (stat(path, &st) == 0 && st.st_size > MAX_LIST_BODY) {
+                reply_text(fd, 413, "list file is larger than 64 KiB — edit it on the router",
+                           head_only);
+                return;
+            }
+        }
+        f = fopen(path, "r");
+        if (!f) {
+            reply(fd, 200, "text/plain; charset=utf-8", "", 0, head_only);
+            return;
+        }
+        buf = malloc(MAX_LIST_BODY + 1);
+        if (!buf) {
+            fclose(f);
+            reply_text(fd, 500, "oom", head_only);
+            return;
+        }
+        got = fread(buf, 1, MAX_LIST_BODY, f);
+        fclose(f);
+        buf[got] = '\0';
+        reply(fd, 200, "text/plain; charset=utf-8", buf, got, head_only);
+        free(buf);
+        return;
+    }
+    if (!strcmp(target, "/api/list")) {
+        char name[32] = { 0 };
+        char *jb;
+        list_path_from_query(cfg, query, name, sizeof(name));
+        if (strcmp(name, "vpn_always") && strcmp(name, "vpn_never")) {
+            reply_text(fd, 400, "bad name", head_only);
+            return;
+        }
+        jb = malloc(MAX_BODY);
+        if (!jb) {
+            reply_text(fd, 500, "oom", head_only);
+            return;
+        }
+        ops_list_json(cfg, name, jb, MAX_BODY);
+        reply(fd, 200, "application/json; charset=utf-8", jb, strlen(jb), head_only);
+        free(jb);
+        return;
+    }
+    if (!strncmp(target, "/api/", 5)) {
+        reply_text(fd, 404, "no such api", head_only);
+        return;
+    }
+
+    serve_file(fd, SUSANIN_WWW_ROOT, target, head_only,
+               qauth ? cfg->web_token : NULL);
+}
+
+int web_run(const susanin_config *cfg)
+{
+    struct sockaddr_in sa;
+    int sfd, opt = 1;
+    const char *listen_addr = cfg->web_listen;
+    int port = cfg->web_port > 0 ? cfg->web_port : 8087;
+
+    if (!cfg->web_enable) {
+        fprintf(stderr, "web: disabled (set web_enable=1 in config)\n");
+        return 0;
+    }
+    if (!listen_addr[0]) {
+        fprintf(stderr, "web: web_listen is not set (use a LAN address, e.g. 192.168.1.1)\n");
+        return 2;
+    }
+    if (!strcmp(listen_addr, "0.0.0.0")) {
+        fprintf(stderr, "web: refusing to listen on 0.0.0.0; set a LAN address\n");
+        return 2;
+    }
+    if (!cfg->web_token[0])
+        fprintf(stderr, "web: warning: web_token is empty — access without auth (LAN only)\n");
+
+    sfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sfd < 0) {
+        perror("web: socket");
+        return 1;
+    }
+    setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, listen_addr, &sa.sin_addr) != 1) {
+        fprintf(stderr, "web: invalid web_listen '%s'\n", listen_addr);
+        close(sfd);
+        return 2;
+    }
+    if (bind(sfd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+        fprintf(stderr, "web: cannot bind %s:%d: %s (port busy?)\n",
+                listen_addr, port, strerror(errno));
+        close(sfd);
+        return 1;
+    }
+    if (listen(sfd, 16) != 0) {
+        fprintf(stderr, "web: listen failed: %s\n", strerror(errno));
+        close(sfd);
+        return 1;
+    }
+
+    signal(SIGCHLD, SIG_IGN);
+    slog_init(cfg->log_level);
+    printf("web: listening on http://%s:%d/ (www=%s)\n",
+           listen_addr, port, SUSANIN_WWW_ROOT);
+    slogf(SL_INFO, "web: listening on %s:%d", listen_addr, port);
+
+    for (;;) {
+        struct sockaddr_in ca;
+        socklen_t cl = sizeof(ca);
+        int cfd = accept(sfd, (struct sockaddr *)&ca, &cl);
+        if (cfd < 0) {
+            if (errno == EINTR)
+                continue;
+            usleep(100000);
+            continue;
+        }
+        {
+            pid_t pid = fork();
+            if (pid == 0) {
+                struct timeval tv;
+                tv.tv_sec = 10;
+                tv.tv_usec = 0;
+                setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+                close(sfd);
+                handle_conn(cfd, cfg);
+                close(cfd);
+                _exit(0);
+            }
+            close(cfd);
+        }
+    }
+    return 0; /* недостижимо */
+}

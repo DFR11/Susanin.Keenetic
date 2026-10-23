@@ -1,28 +1,47 @@
 #define _GNU_SOURCE
 #include "config.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static int parse_interval(const char *s)
+/* Единицы длительностей (в секундах). У каждого временного параметра своя
+ * единица; в файле значение пишется числом БЕЗ суффикса, а единица указана
+ * в описании параметра. */
+#define U_SEC   1
+#define U_MIN   60
+#define U_HOUR  3600
+
+/* Разбор длительности. Голое число трактуется в единицах параметра (unit —
+ * сколько секунд в единице). Суффиксы s/m/h/d/w поддержаны для совместимости
+ * со старыми конфигами (напр. cooldown_ttl=5m). */
+static int parse_dur(const char *s, int unit)
 {
     char *end = NULL;
-    long v = strtol(s, &end, 10);
+    long v;
+    if (!s)
+        return 0;
+    v = strtol(s, &end, 10);
     if (end == s || v < 0)
         return 0;
-    if (end && (*end == 's' || *end == '\0'))
-        return (int)v;
-    if (end && *end == 'm')
-        return (int)(v * 60);
-    if (end && *end == 'h')
-        return (int)(v * 3600);
-    if (end && *end == 'd')
-        return (int)(v * 86400);
-    if (end && *end == 'w')
-        return (int)(v * 604800);
-    return (int)v;
+    if (end) {
+        if (*end == 's') return (int)v;
+        if (*end == 'm') return (int)(v * 60);
+        if (*end == 'h') return (int)(v * 3600);
+        if (*end == 'd') return (int)(v * 86400);
+        if (*end == 'w') return (int)(v * 604800);
+    }
+    return (int)(v * unit);
+}
+
+/* Обратное преобразование: секунды -> значение в единицах параметра. */
+static int out_dur(int secs, int unit)
+{
+    if (unit <= 0)
+        unit = 1;
+    return secs / unit;
 }
 
 /* Копирование строки с ограничением (без -Wformat-truncation). */
@@ -38,9 +57,10 @@ static void copy_str(char *dst, size_t n, const char *src)
     dst[i] = '\0';
 }
 
-/* Разбор списков egress_interface / egress_address (через запятую).
- * Значения выравниваются по индексу; допускается один адрес на все интерфейсы. */
-static void parse_egress(susanin_config *c)
+/* egress_interface/egress_address — списки через запятую (фейловер).
+ * Значения выравниваются по индексу; один адрес допустим на все интерфейсы.
+ * Не static: нужен и из ops_setup после смены ключа. */
+void config_parse_egress(susanin_config *c)
 {
     char buf[CFG_PATH_MAX], abuf[CFG_PATH_MAX];
     char *save = NULL, *asave = NULL, *tok, *atok;
@@ -95,15 +115,16 @@ void config_set_defaults(susanin_config *c)
     c->ok_refresh_below = 3 * 3600;
     c->ok_max_entries = 4096;
     c->ok_evict_misses = 3;
-    c->promo_per_min = 30;
+    c->promo_per_min = 120;
     c->test_ttl = 60;
     c->cooldown_ttl = 5 * 60;
     c->cooldown_ok_ttl = 30;
     c->watch_ttl = 8;
     c->watch_retry_below = 4;
     c->health_miss_debounce = 4;
+    snprintf(c->health_mode, sizeof(c->health_mode), "%s", "icmp");
+    c->health_tcp_port = 443;
     snprintf(c->health_probe, sizeof(c->health_probe), "%s", "1.1.1.1,8.8.8.8");
-    snprintf(c->health_probe_src, sizeof(c->health_probe_src), "%s", "10.8.1.1");
     snprintf(c->vpn_always_file, sizeof(c->vpn_always_file), "%s",
              "/opt/susanin/etc/vpn_always.txt");
     snprintf(c->vpn_always_dns, sizeof(c->vpn_always_dns), "%s", "");
@@ -112,13 +133,77 @@ void config_set_defaults(susanin_config *c)
              "/opt/susanin/etc/vpn_never.txt");
     c->vpn_never_interval = 300;
     snprintf(c->log_level, sizeof(c->log_level), "%s", "info");
-    c->diagnostics = 0;
+    snprintf(c->xray_loglevel, sizeof(c->xray_loglevel), "%s", "warning");
+    snprintf(c->xray_gogc, sizeof(c->xray_gogc), "%s", "50");
+    snprintf(c->xray_gomemlimit, sizeof(c->xray_gomemlimit), "%s", "64MiB");
+    c->xray_watchdog = 1;
     snprintf(c->disk_mode, sizeof(c->disk_mode), "%s", "normal");
     c->soft_state_interval = 12 * 3600;   /* soft: сохранять состояние раз в 12 ч */
     /* Порты, которые не участвуют в автообучении (типовой скан-шум). */
     snprintf(c->learn_exclude_ports, sizeof(c->learn_exclude_ports), "%s",
-             "22,23,53,135,137,138,139,445,554,1433,1723,3306,3389,5432,5900,6379,7547,9100,11211,27017");
-    parse_egress(c);
+             "22,23,53,135,137,138,139,445,500,554,853,1433,1723,3306,3389,4500,5432,5900,6379,7547,8567,9100,11211,27017");
+    snprintf(c->discover_exclude, sizeof(c->discover_exclude), "%s",
+             "wdtt0,wdttraw0,tun0,tap0");
+    snprintf(c->lan_server_interfaces, sizeof(c->lan_server_interfaces), "%s", "");
+    c->dp_check_interval = 15;
+    c->learn_min_op = 10;
+    c->learn_min_bytes = 2000;
+    c->confirm_min_bytes = 512;
+    c->learn_strict = 0;
+    /* Пресет порогов не задан: значения — как выше (поведение не меняется). */
+    snprintf(c->precision, sizeof(c->precision), "%s", "");
+    /* Port-aware identity: по умолчанию выключено (поведение не меняется). */
+    c->port_aware = 0;
+    snprintf(c->cdn_ranges_file, sizeof(c->cdn_ranges_file), "%s",
+             "/opt/susanin/etc/cdn_ranges.txt");
+    snprintf(c->cdn_ranges_url, sizeof(c->cdn_ranges_url), "%s",
+             "https://www.cloudflare.com/ips-v4");
+    c->cdn_ranges_interval = 86400;
+    c->cdn_prefix_learn = 1;
+    c->cdn_prefix_ttl = 3600;
+    c->aggregate_confirm = 2;
+    c->cdn_prefix_max = 24;
+    c->ipv6_block = 1;
+    c->quic_block = 1;
+    snprintf(c->mss_clamp, sizeof(c->mss_clamp), "%s", "0");
+    c->mss_clamp_lan = 0;
+    /* Встроенная веб-панель: по умолчанию выключена, адрес не задан. */
+    c->web_enable = 0;
+    snprintf(c->web_listen, sizeof(c->web_listen), "%s", "");
+    c->web_port = 8087;
+    snprintf(c->web_token, sizeof(c->web_token), "%s", "");
+    snprintf(c->egress_type, sizeof(c->egress_type), "%s", "interface");
+    c->tproxy_port = 12345;
+    c->udp_relay = 0;
+    c->udp_relay_port = 1081;
+    snprintf(c->socks_addr, sizeof(c->socks_addr), "%s", "127.0.0.1");
+    c->socks_port = 1080;
+    c->egress_failback = 1;
+    c->egress_failback_debounce = 30;
+    c->dns_sniff = 0;
+    c->dns_sniff_ttl = 300;
+    c->dns_hijack = 0;
+    c->vpn_always_cdn_prefix = 0;
+    c->pin_reassert = 1;
+    c->kernel_offload = 0;
+    c->kernel_offload_max = 24;
+    c->egress_race = 0;
+    c->auto_direct = 1;
+    c->direct_pref_ttl = 3600;
+    c->media_enabled = 0;
+    /* Медиа-порты по умолчанию — только видео/IPTV. 80/443 убраны: обычная
+     * загрузка страницы под них подпадала, и два адреса уводили в VPN всю /24
+     * хостинга (инцидент reg.ru 2026-10-16). Кому нужно — задаёт явно. */
+    snprintf(c->media_ports, sizeof(c->media_ports), "%s", "554,1935,8080,8443");
+    c->media_min_bytes = 1048576;
+    c->media_ratio = 8;
+    c->media_min_rate = 150000;
+    c->media_min_age = 12;
+    c->media_ttl = 21600;
+    c->media_prefix_max = 24;
+    c->profile_failover = 1;
+    c->n_profiles = 0;
+    config_parse_egress(c);
 }
 
 static void set_str(char *dst, size_t n, const char *v)
@@ -126,10 +211,56 @@ static void set_str(char *dst, size_t n, const char *v)
     snprintf(dst, n, "%s", v ? v : "");
 }
 
+/* «Профили точности» (precision): пресет порогов автообучения. Значение пресета
+ * применяется к полям, которых НЕТ в конфиге явно (см. биты PREC_* в config_load),
+ * поэтому ключи в susanin.conf всегда сильнее. При config_save/config_print
+ * пресет не «разворачивается» — в файл пишется только сам ключ precision. */
+enum {
+    PREC_FAST_SYN = 1,      /* fast_syn_min_op */
+    PREC_EVICT = 2,         /* ok_evict_misses */
+    PREC_LEARN_OP = 4,      /* learn_min_op */
+    PREC_LEARN_BYTES = 8,   /* learn_min_bytes */
+    PREC_CONFIRM = 16,      /* confirm_min_bytes */
+    PREC_STRICT = 32        /* learn_strict */
+};
+
+/* Значение пресета известно? (strict | normal | aggressive | пусто) */
+static int precision_known(const char *p)
+{
+    return !p[0] || !strcmp(p, "normal") || !strcmp(p, "strict") ||
+           !strcmp(p, "aggressive");
+}
+
+static void apply_precision(susanin_config *c, unsigned seen)
+{
+    const char *p = c->precision;
+    if (!p[0] || !strcmp(p, "normal"))
+        return;
+    if (!strcmp(p, "strict")) {
+        if (!(seen & PREC_FAST_SYN))    c->fast_syn_min_op = 3;
+        if (!(seen & PREC_EVICT))       c->ok_evict_misses = 5;
+        if (!(seen & PREC_LEARN_OP))    c->learn_min_op = 14;
+        if (!(seen & PREC_LEARN_BYTES)) c->learn_min_bytes = 3000;
+        if (!(seen & PREC_CONFIRM))     c->confirm_min_bytes = 1024;
+    } else if (!strcmp(p, "aggressive")) {
+        if (!(seen & PREC_FAST_SYN))    c->fast_syn_min_op = 1;
+        if (!(seen & PREC_EVICT))       c->ok_evict_misses = 2;
+        if (!(seen & PREC_LEARN_OP))    c->learn_min_op = 8;
+        if (!(seen & PREC_LEARN_BYTES)) c->learn_min_bytes = 1500;
+        if (!(seen & PREC_CONFIRM))     c->confirm_min_bytes = 256;
+    } else {
+        /* Опечатка вроде precision=strong раньше молча ничего не делала:
+         * теперь это видно и в stderr (уходит в лог), и в `config show`. */
+        fprintf(stderr, "warning: unknown precision '%s' "
+                        "(expected strict|normal|aggressive) — ignored\n", p);
+    }
+}
+
 int config_load(const char *path, susanin_config *c)
 {
     FILE *fp;
     char line[512];
+    unsigned seen = 0;      /* какие ключи группы порогов были в файле явно */
 
     config_set_defaults(c);
     if (!path)
@@ -160,6 +291,50 @@ int config_load(const char *path, susanin_config *c)
             while (q >= val && (*q == ' ' || *q == '\t' || *q == '\r')) *q-- = '\0';
         }
 
+        {
+            int handled = 0, pi;
+            for (pi = 1; pi <= CFG_MAX_PROFILES; pi++) {
+                char pk[40];
+                snprintf(pk, sizeof(pk), "profile%d_name", pi);
+                if (!strcmp(key, pk)) {
+                    set_str(c->profile_name[pi - 1], sizeof(c->profile_name[pi - 1]), val);
+                    handled = 1; break;
+                }
+                snprintf(pk, sizeof(pk), "profile%d_egress", pi);
+                if (!strcmp(key, pk)) {
+                    set_str(c->profile_egress[pi - 1], sizeof(c->profile_egress[pi - 1]), val);
+                    handled = 1; break;
+                }
+                snprintf(pk, sizeof(pk), "profile%d_list", pi);
+                if (!strcmp(key, pk)) {
+                    set_str(c->profile_list[pi - 1], sizeof(c->profile_list[pi - 1]), val);
+                    handled = 1; break;
+                }
+                snprintf(pk, sizeof(pk), "profile%d_geo_url", pi);
+                if (!strcmp(key, pk)) {
+                    set_str(c->profile_geo_url[pi - 1], sizeof(c->profile_geo_url[pi - 1]), val);
+                    handled = 1; break;
+                }
+                snprintf(pk, sizeof(pk), "profile%d_auto", pi);
+                if (!strcmp(key, pk)) {
+                    c->profile_auto[pi - 1] = (int)strtol(val, NULL, 0);
+                    handled = 1; break;
+                }
+                snprintf(pk, sizeof(pk), "profile%d_table", pi);
+                if (!strcmp(key, pk)) {
+                    c->profile_table[pi - 1] = (int)strtol(val, NULL, 0);
+                    handled = 1; break;
+                }
+                snprintf(pk, sizeof(pk), "profile%d_mark", pi);
+                if (!strcmp(key, pk)) {
+                    c->profile_mark[pi - 1] = strtoul(val, NULL, 0);
+                    handled = 1; break;
+                }
+            }
+            if (handled)
+                continue;
+        }
+
         if (!strcmp(key, "egress_interface"))
             set_str(c->egress_interface, sizeof(c->egress_interface), val);
         else if (!strcmp(key, "egress_address"))
@@ -179,117 +354,597 @@ int config_load(const char *path, susanin_config *c)
         else if (!strcmp(key, "ip_rule_priority_start"))
             c->ip_rule_priority_start = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "fast_interval"))
-            c->fast_interval = parse_interval(val);
+            c->fast_interval = parse_dur(val, U_SEC);
         else if (!strcmp(key, "soft_interval"))
-            c->soft_interval = parse_interval(val);
+            c->soft_interval = parse_dur(val, U_SEC);
         else if (!strcmp(key, "judge_interval"))
-            c->judge_interval = parse_interval(val);
+            c->judge_interval = parse_dur(val, U_SEC);
         else if (!strcmp(key, "health_interval"))
-            c->health_interval = parse_interval(val);
-        else if (!strcmp(key, "fast_syn_min_op"))
+            c->health_interval = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "fast_syn_min_op")) {
             c->fast_syn_min_op = (int)strtol(val, NULL, 0);
+            seen |= PREC_FAST_SYN;
+        }
         else if (!strcmp(key, "ok_ttl"))
-            c->ok_ttl = parse_interval(val);
+            c->ok_ttl = parse_dur(val, U_SEC);
         else if (!strcmp(key, "ok_refresh_below"))
-            c->ok_refresh_below = parse_interval(val);
+            c->ok_refresh_below = parse_dur(val, U_HOUR);
         else if (!strcmp(key, "ok_max_entries"))
             c->ok_max_entries = (int)strtol(val, NULL, 0);
-        else if (!strcmp(key, "ok_evict_misses"))
+        else if (!strcmp(key, "ok_evict_misses")) {
             c->ok_evict_misses = (int)strtol(val, NULL, 0);
+            seen |= PREC_EVICT;
+        }
         else if (!strcmp(key, "promo_per_min"))
             c->promo_per_min = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "test_ttl"))
-            c->test_ttl = parse_interval(val);
+            c->test_ttl = parse_dur(val, U_MIN);
         else if (!strcmp(key, "cooldown_ttl"))
-            c->cooldown_ttl = parse_interval(val);
+            c->cooldown_ttl = parse_dur(val, U_MIN);
         else if (!strcmp(key, "cooldown_ok_ttl"))
-            c->cooldown_ok_ttl = parse_interval(val);
+            c->cooldown_ok_ttl = parse_dur(val, U_SEC);
         else if (!strcmp(key, "watch_ttl"))
-            c->watch_ttl = parse_interval(val);
+            c->watch_ttl = parse_dur(val, U_SEC);
         else if (!strcmp(key, "watch_retry_below"))
-            c->watch_retry_below = parse_interval(val);
+            c->watch_retry_below = parse_dur(val, U_SEC);
         else if (!strcmp(key, "health_miss_debounce"))
             c->health_miss_debounce = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "health_mode"))
+            set_str(c->health_mode, sizeof(c->health_mode), val);
+        else if (!strcmp(key, "health_tcp_port"))
+            c->health_tcp_port = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "health_probe"))
             set_str(c->health_probe, sizeof(c->health_probe), val);
-        else if (!strcmp(key, "health_probe_src"))
-            set_str(c->health_probe_src, sizeof(c->health_probe_src), val);
         else if (!strcmp(key, "vpn_always_file"))
             set_str(c->vpn_always_file, sizeof(c->vpn_always_file), val);
         else if (!strcmp(key, "vpn_always_dns"))
             set_str(c->vpn_always_dns, sizeof(c->vpn_always_dns), val);
         else if (!strcmp(key, "vpn_always_interval"))
-            c->vpn_always_interval = parse_interval(val);
+            c->vpn_always_interval = parse_dur(val, U_SEC);
         else if (!strcmp(key, "vpn_never_file"))
             set_str(c->vpn_never_file, sizeof(c->vpn_never_file), val);
         else if (!strcmp(key, "vpn_never_interval"))
-            c->vpn_never_interval = parse_interval(val);
-        else if (!strcmp(key, "log_level"))
-            set_str(c->log_level, sizeof(c->log_level), val);
-        else if (!strcmp(key, "diagnostics"))
-            c->diagnostics = (int)strtol(val, NULL, 0);
+            c->vpn_never_interval = parse_dur(val, U_SEC);
+            else if (!strcmp(key, "log_level"))
+                set_str(c->log_level, sizeof(c->log_level), val);
+            else if (!strcmp(key, "xray_loglevel"))
+                set_str(c->xray_loglevel, sizeof(c->xray_loglevel), val);
+            else if (!strcmp(key, "xray_gogc"))
+                set_str(c->xray_gogc, sizeof(c->xray_gogc), val);
+            else if (!strcmp(key, "xray_gomemlimit"))
+                set_str(c->xray_gomemlimit, sizeof(c->xray_gomemlimit), val);
+            else if (!strcmp(key, "xray_watchdog"))
+                c->xray_watchdog = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "disk_mode"))
             set_str(c->disk_mode, sizeof(c->disk_mode), val);
         else if (!strcmp(key, "soft_state_interval"))
-            c->soft_state_interval = parse_interval(val);
+            c->soft_state_interval = parse_dur(val, U_HOUR);
         else if (!strcmp(key, "learn_exclude_ports"))
             set_str(c->learn_exclude_ports, sizeof(c->learn_exclude_ports), val);
+        else if (!strcmp(key, "discover_exclude"))
+            set_str(c->discover_exclude, sizeof(c->discover_exclude), val);
+        else if (!strcmp(key, "lan_server_interfaces"))
+            set_str(c->lan_server_interfaces, sizeof(c->lan_server_interfaces), val);
+        else if (!strcmp(key, "dp_check_interval"))
+            c->dp_check_interval = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "learn_min_op")) {
+            c->learn_min_op = (int)strtol(val, NULL, 0);
+            seen |= PREC_LEARN_OP;
+        }
+        else if (!strcmp(key, "learn_min_bytes")) {
+            c->learn_min_bytes = (int)strtol(val, NULL, 0);
+            seen |= PREC_LEARN_BYTES;
+        }
+        else if (!strcmp(key, "confirm_min_bytes")) {
+            c->confirm_min_bytes = (int)strtol(val, NULL, 0);
+            seen |= PREC_CONFIRM;
+        }
+        else if (!strcmp(key, "learn_strict")) {
+            c->learn_strict = (int)strtol(val, NULL, 0);
+            seen |= PREC_STRICT;
+        }
+        else if (!strcmp(key, "port_aware"))
+            c->port_aware = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "precision"))
+            set_str(c->precision, sizeof(c->precision), val);
+        else if (!strcmp(key, "cdn_ranges_file"))
+            set_str(c->cdn_ranges_file, sizeof(c->cdn_ranges_file), val);
+        else if (!strcmp(key, "cdn_ranges_url"))
+            set_str(c->cdn_ranges_url, sizeof(c->cdn_ranges_url), val);
+        else if (!strcmp(key, "cdn_ranges_interval"))
+            c->cdn_ranges_interval = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "cdn_prefix_learn"))
+            c->cdn_prefix_learn = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "cdn_prefix_ttl"))
+            c->cdn_prefix_ttl = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "aggregate_confirm"))
+            c->aggregate_confirm = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "cdn_prefix_max"))
+            c->cdn_prefix_max = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "ipv6_block"))
+            c->ipv6_block = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "quic_block"))
+            c->quic_block = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "mss_clamp"))
+            set_str(c->mss_clamp, sizeof(c->mss_clamp), val);
+        else if (!strcmp(key, "mss_clamp_lan"))
+            c->mss_clamp_lan = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "egress_failback"))
+            c->egress_failback = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "egress_failback_debounce"))
+            c->egress_failback_debounce = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "dns_sniff"))
+            c->dns_sniff = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "dns_sniff_ttl"))
+            c->dns_sniff_ttl = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "dns_sniff_iface"))
+            set_str(c->dns_sniff_iface, sizeof(c->dns_sniff_iface), val);
+        else if (!strcmp(key, "dns_hijack"))
+            c->dns_hijack = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "dns_hijack_target"))
+            set_str(c->dns_hijack_target, sizeof(c->dns_hijack_target), val);
+        else if (!strcmp(key, "vpn_always_cdn_prefix"))
+            c->vpn_always_cdn_prefix = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "pin_reassert"))
+            c->pin_reassert = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "kernel_offload"))
+            c->kernel_offload = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "kernel_egress"))
+            set_str(c->kernel_egress, sizeof(c->kernel_egress), val);
+        else if (!strcmp(key, "kernel_offload_max"))
+            c->kernel_offload_max = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "egress_race"))
+            c->egress_race = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "auto_direct"))
+            c->auto_direct = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "direct_pref_ttl"))
+            c->direct_pref_ttl = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "media_enabled"))
+            c->media_enabled = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "media_ports"))
+            set_str(c->media_ports, sizeof(c->media_ports), val);
+        else if (!strcmp(key, "media_min_bytes"))
+            c->media_min_bytes = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "media_ratio"))
+            c->media_ratio = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "media_min_rate"))
+            c->media_min_rate = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "media_min_age"))
+            c->media_min_age = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "media_ttl"))
+            c->media_ttl = parse_dur(val, U_SEC);
+        else if (!strcmp(key, "media_prefix_max"))
+            c->media_prefix_max = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "profile_failover"))
+            c->profile_failover = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "egress_type"))
+            set_str(c->egress_type, sizeof(c->egress_type), val);
+        else if (!strcmp(key, "tproxy_port"))
+            c->tproxy_port = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "udp_relay"))
+            c->udp_relay = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "udp_relay_port"))
+            c->udp_relay_port = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "socks_addr"))
+            set_str(c->socks_addr, sizeof(c->socks_addr), val);
+        else if (!strcmp(key, "socks_port"))
+            c->socks_port = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "web_enable"))
+            c->web_enable = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "web_listen"))
+            set_str(c->web_listen, sizeof(c->web_listen), val);
+        else if (!strcmp(key, "web_port"))
+            c->web_port = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "web_token"))
+            set_str(c->web_token, sizeof(c->web_token), val);
     }
 
     fclose(fp);
-    parse_egress(c);
+
+    /* «Профили точности»: пресет применяется ПОСЛЕ разбора файла и только к тем
+     * порогам, которых в файле не было (явные ключи сильнее пресета). */
+    apply_precision(c, seen);
+
+    /* P2: профили из profiles.d (один профиль = один файл .conf) дополняют
+     * profileN_* из susanin.conf. Каталог: $SUSANIN_PROFILES_DIR или
+     * /opt/susanin/etc/profiles.d. Ключи файла: name, egress, list, geo_url,
+     * table, mark, auto. */
+    {
+        const char *pdir = getenv("SUSANIN_PROFILES_DIR");
+        DIR *d;
+        struct dirent *de;
+        if (!pdir || !*pdir)
+            pdir = "/opt/susanin/etc/profiles.d";
+        d = opendir(pdir);
+        if (d) {
+            while ((de = readdir(d))) {
+                char fp[CFG_PATH_MAX + 300];
+                FILE *pf;
+                char line[512];
+                int slot = -1, i;
+                size_t nl = strlen(de->d_name);
+                if (de->d_name[0] == '.' || nl < 6 ||
+                    strcmp(de->d_name + nl - 5, ".conf"))
+                    continue;
+                for (i = 0; i < CFG_MAX_PROFILES; i++)
+                    if (!c->profile_name[i][0]) { slot = i; break; }
+                if (slot < 0)
+                    break;
+                snprintf(fp, sizeof(fp), "%s/%s", pdir, de->d_name);
+                pf = fopen(fp, "r");
+                if (!pf)
+                    continue;
+                while (fgets(line, sizeof(line), pf)) {
+                    char *p = line, *eq, *v, *q;
+                    while (*p == ' ' || *p == '\t') p++;
+                    if (*p == '#' || *p == '\n' || *p == '\0')
+                        continue;
+                    eq = strchr(p, '=');
+                    if (!eq)
+                        continue;
+                    *eq = '\0';
+                    v = eq + 1;
+                    q = v + strlen(v);
+                    while (q > v && (q[-1] == '\n' || q[-1] == '\r' ||
+                                     q[-1] == ' ' || q[-1] == '\t'))
+                        *--q = '\0';
+                    if (!strcmp(p, "name"))
+                        set_str(c->profile_name[slot], sizeof(c->profile_name[slot]), v);
+                    else if (!strcmp(p, "egress"))
+                        set_str(c->profile_egress[slot], sizeof(c->profile_egress[slot]), v);
+                    else if (!strcmp(p, "list"))
+                        set_str(c->profile_list[slot], sizeof(c->profile_list[slot]), v);
+                    else if (!strcmp(p, "geo_url"))
+                        set_str(c->profile_geo_url[slot], sizeof(c->profile_geo_url[slot]), v);
+                    else if (!strcmp(p, "table"))
+                        c->profile_table[slot] = (int)strtol(v, NULL, 0);
+                    else if (!strcmp(p, "mark"))
+                        c->profile_mark[slot] = strtoul(v, NULL, 0);
+                    else if (!strcmp(p, "auto"))
+                        c->profile_auto[slot] = (int)strtol(v, NULL, 0);
+                }
+                fclose(pf);
+                if (!c->profile_name[slot][0]) {
+                    size_t k;
+                    for (k = 0; k + 1 < sizeof(c->profile_name[slot]) &&
+                                de->d_name[k] && de->d_name[k] != '.'; k++)
+                        c->profile_name[slot][k] = de->d_name[k];
+                    c->profile_name[slot][k] = '\0';
+                }
+            }
+            closedir(d);
+        }
+    }
+
+    {
+        static const int def_tbl[CFG_MAX_PROFILES] = { 201, 202, 203, 204 };
+        static const unsigned long def_mark[CFG_MAX_PROFILES] = {
+            0x40000000UL, 0x08000000UL, 0x04000000UL, 0x02000000UL
+        };
+        int pi, n = 0;
+        for (pi = 0; pi < CFG_MAX_PROFILES; pi++) {
+            if (!c->profile_name[pi][0])
+                continue;
+            if (!c->profile_table[pi])
+                c->profile_table[pi] = def_tbl[pi];
+            if (!c->profile_mark[pi])
+                c->profile_mark[pi] = def_mark[pi];
+            n++;
+        }
+        c->n_profiles = n;
+    }
+    config_parse_egress(c);
     return 0;
 }
 
 int config_save(const char *path, const susanin_config *c)
 {
     FILE *fp = fopen(path, "w");
+    int i;
     if (!fp)
         return -1;
     fprintf(fp, "# Susanin.Keenetic configuration (generated)\n");
+    fprintf(fp, "# Формат: key=value. Длительности — числом БЕЗ букв, в единицах,\n");
+    fprintf(fp, "# указанных в описании параметра (сек / мин / ч).\n");
+
+    fprintf(fp, "\n# Интерфейс(ы) туннеля (egress), через запятую; несколько включают фейловер.\n");
     fprintf(fp, "egress_interface=%s\n", c->egress_interface);
+    fprintf(fp, "# Адрес(а) туннеля по индексу с интерфейсами (источник для health-проб).\n");
     fprintf(fp, "egress_address=%s\n", c->egress_address);
+    fprintf(fp, "# LAN-интерфейсы (ingress), через запятую.\n");
     fprintf(fp, "lan_interfaces=%s\n", c->lan_interfaces);
+    fprintf(fp, "# LAN-подсети (CIDR), через запятую.\n");
     fprintf(fp, "lan_subnets=%s\n", c->lan_subnets);
+    fprintf(fp, "# Номер таблицы маршрутизации для VPN (небольшой; ограничение busybox ip).\n");
     fprintf(fp, "routing_table=%d\n", c->routing_table);
+    fprintf(fp, "# fwmark «test»-фазы (hex, 32 бита).\n");
     fprintf(fp, "mark_test=0x%lx\n", c->mark_test);
+    fprintf(fp, "# fwmark «ok»-фазы — подтверждено, идёт через VPN (hex).\n");
     fprintf(fp, "mark_ok=0x%lx\n", c->mark_ok);
+    fprintf(fp, "# Маска fwmark для правил (hex).\n");
     fprintf(fp, "mark_mask=0x%lx\n", c->mark_mask);
+    fprintf(fp, "# Стартовый приоритет ip rule.\n");
     fprintf(fp, "ip_rule_priority_start=%d\n", c->ip_rule_priority_start);
-    fprintf(fp, "fast_interval=%ds\n", c->fast_interval);
-    fprintf(fp, "soft_interval=%ds\n", c->soft_interval);
-    fprintf(fp, "judge_interval=%ds\n", c->judge_interval);
-    fprintf(fp, "health_interval=%ds\n", c->health_interval);
+    fprintf(fp, "# Интервал «быстрой» фазы детекта, сек.\n");
+    fprintf(fp, "fast_interval=%d\n", out_dur(c->fast_interval, U_SEC));
+    fprintf(fp, "# Интервал «мягкой» фазы детекта (потоки с ответами), сек.\n");
+    fprintf(fp, "soft_interval=%d\n", out_dur(c->soft_interval, U_SEC));
+    fprintf(fp, "# Интервал фазы подтверждения (judge), сек.\n");
+    fprintf(fp, "judge_interval=%d\n", out_dur(c->judge_interval, U_SEC));
+    fprintf(fp, "# Интервал health-проб туннеля, сек.\n");
+    fprintf(fp, "health_interval=%d\n", out_dur(c->health_interval, U_SEC));
+    fprintf(fp, "# «Быстрый» детект: SYN без ответа до реакции (1 = быстрее, больше ложных).\n");
     fprintf(fp, "fast_syn_min_op=%d\n", c->fast_syn_min_op);
-    fprintf(fp, "ok_ttl=%ds\n", c->ok_ttl);
-    fprintf(fp, "ok_refresh_below=%ds\n", c->ok_refresh_below);
+    fprintf(fp, "# TTL выученных ok-адресов, сек; 0 = никогда не истекает (наборы растут).\n");
+    fprintf(fp, "ok_ttl=%d\n", out_dur(c->ok_ttl, U_SEC));
+    fprintf(fp, "# Обновлять ok-адрес, если до истечения меньше заданного, ч.\n");
+    fprintf(fp, "ok_refresh_below=%d\n", out_dur(c->ok_refresh_below, U_HOUR));
+    fprintf(fp, "# Лимит записей ok-кэша на протокол; 0 = без лимита.\n");
     fprintf(fp, "ok_max_entries=%d\n", c->ok_max_entries);
+    fprintf(fp, "# Сколько подряд сбоев по адресу нужно для снятия из ok.\n");
     fprintf(fp, "ok_evict_misses=%d\n", c->ok_evict_misses);
+    fprintf(fp, "# Лимит новых переводов в VPN в минуту; 0 = без лимита.\n");
     fprintf(fp, "promo_per_min=%d\n", c->promo_per_min);
-    fprintf(fp, "test_ttl=%ds\n", c->test_ttl);
-    fprintf(fp, "cooldown_ttl=%ds\n", c->cooldown_ttl);
-    fprintf(fp, "cooldown_ok_ttl=%ds\n", c->cooldown_ok_ttl);
-    fprintf(fp, "watch_ttl=%ds\n", c->watch_ttl);
-    fprintf(fp, "watch_retry_below=%ds\n", c->watch_retry_below);
+    fprintf(fp, "# TTL «test»-состояния (проба через VPN), мин.\n");
+    fprintf(fp, "test_ttl=%d\n", out_dur(c->test_ttl, U_MIN));
+    fprintf(fp, "# «Остывание» после снятия адреса из ok, мин.\n");
+    fprintf(fp, "cooldown_ttl=%d\n", out_dur(c->cooldown_ttl, U_MIN));
+    fprintf(fp, "# «Остывание» успешно подтверждённого адреса, сек.\n");
+    fprintf(fp, "cooldown_ok_ttl=%d\n", out_dur(c->cooldown_ok_ttl, U_SEC));
+    fprintf(fp, "# TTL «наблюдения» за подозрительным потоком, сек.\n");
+    fprintf(fp, "watch_ttl=%d\n", out_dur(c->watch_ttl, U_SEC));
+    fprintf(fp, "# Мин. время до повторной пробы «наблюдения», сек.\n");
+    fprintf(fp, "watch_retry_below=%d\n", out_dur(c->watch_retry_below, U_SEC));
+    fprintf(fp, "# Порог «туннель упал»: подряд неудачных health-проб.\n");
     fprintf(fp, "health_miss_debounce=%d\n", c->health_miss_debounce);
+    fprintf(fp, "# Тип health-пробы: icmp | tcp (tcp — если egress не несёт ICMP: XRay/TUN).\n");
+    fprintf(fp, "health_mode=%s\n", c->health_mode);
+    fprintf(fp, "# Порт TCP-пробы (для health_mode=tcp).\n");
+    fprintf(fp, "health_tcp_port=%d\n", c->health_tcp_port);
+    fprintf(fp, "# Адреса health-проб через туннель, через запятую.\n");
     fprintf(fp, "health_probe=%s\n", c->health_probe);
-    fprintf(fp, "health_probe_src=%s\n", c->health_probe_src);
+    fprintf(fp, "# Файл списка «всегда через VPN».\n");
     fprintf(fp, "vpn_always_file=%s\n", c->vpn_always_file);
+    fprintf(fp, "# Резолвер для списков; пусто = авто (роутер / LAN-мост).\n");
     fprintf(fp, "vpn_always_dns=%s\n", c->vpn_always_dns);
-    fprintf(fp, "vpn_always_interval=%ds\n", c->vpn_always_interval);
+    fprintf(fp, "# Период обновления списка «всегда через VPN», сек.\n");
+    fprintf(fp, "vpn_always_interval=%d\n", out_dur(c->vpn_always_interval, U_SEC));
+    fprintf(fp, "# Файл списка «всегда напрямую».\n");
     fprintf(fp, "vpn_never_file=%s\n", c->vpn_never_file);
-    fprintf(fp, "vpn_never_interval=%ds\n", c->vpn_never_interval);
+    fprintf(fp, "# Период обновления списка «всегда напрямую», сек.\n");
+    fprintf(fp, "vpn_never_interval=%d\n", out_dur(c->vpn_never_interval, U_SEC));
+    fprintf(fp, "# Уровень логов агента: quiet | error | warn | info | debug | trace.\n");
     fprintf(fp, "log_level=%s\n", c->log_level);
-    fprintf(fp, "diagnostics=%d\n", c->diagnostics);
+    fprintf(fp, "# Уровень логов Xray: debug | info | warning | none (читает xray-egress.sh).\n");
+    fprintf(fp, "xray_loglevel=%s\n", c->xray_loglevel);
+    fprintf(fp, "# GOGC Xray (память; меньше = агрессивнее GC).\n");
+    fprintf(fp, "xray_gogc=%s\n", c->xray_gogc);
+    fprintf(fp, "# GOMEMLIMIT Xray (мягкий лимит памяти, напр. 64MiB).\n");
+    fprintf(fp, "xray_gomemlimit=%s\n", c->xray_gomemlimit);
+    fprintf(fp, "# Watchdog Xray: 1 = агент сам поднимает упавший Xray (tproxy).\n");
+    fprintf(fp, "xray_watchdog=%d\n", c->xray_watchdog);
+    fprintf(fp, "# Режим носителя: normal | soft (минимум записей на NAND/flash).\n");
     fprintf(fp, "disk_mode=%s\n", c->disk_mode);
-    fprintf(fp, "soft_state_interval=%ds\n", c->soft_state_interval);
+    fprintf(fp, "# Период сохранения состояния в soft-режиме, ч; 0 = никогда.\n");
+    fprintf(fp, "soft_state_interval=%d\n", out_dur(c->soft_state_interval, U_HOUR));
+    fprintf(fp, "# Порты, исключённые из быстрого автообучения (скан-шум), через запятую.\n");
     fprintf(fp, "learn_exclude_ports=%s\n", c->learn_exclude_ports);
+    fprintf(fp, "# Интерфейсы, которые НИКОГДА не берём как egress/LAN, через запятую.\n");
+    fprintf(fp, "discover_exclude=%s\n", c->discover_exclude);
+    fprintf(fp, "# Туннели-СЕРВЕРЫ, чьих клиентов тоже обрабатываем как LAN, через запятую.\n");
+    fprintf(fp, "lan_server_interfaces=%s\n", c->lan_server_interfaces);
+    fprintf(fp, "# Период сверки датаплейна (reconcile), сек; 0 = 15.\n");
+    fprintf(fp, "dp_check_interval=%d\n", out_dur(c->dp_check_interval, U_SEC));
+    fprintf(fp, "# DNS-снифинг (домен->IP, зеркально, штатный DNS не трогаем): 0 | 1.\n");
+    fprintf(fp, "dns_sniff=%d\n", c->dns_sniff);
+    fprintf(fp, "# TTL записи домен->IP в снифинге, сек.\n");
+    fprintf(fp, "dns_sniff_ttl=%d\n", out_dur(c->dns_sniff_ttl, U_SEC));
+    fprintf(fp, "# Интерфейс захвата DNS; пусто = все lan_interfaces.\n");
+    fprintf(fp, "dns_sniff_iface=%s\n", c->dns_sniff_iface);
+    fprintf(fp, "# Заворачивать DNS клиентов СЕРВЕРНЫХ VPN (oc+/wdtt+ и\n");
+    fprintf(fp, "# lan_server_interfaces) на резолвер роутера (DNAT 53). br0/br1 и\n");
+    fprintf(fp, "# приватные адреса назначения не трогаются. 0 | 1.\n");
+    fprintf(fp, "dns_hijack=%d\n", c->dns_hijack);
+    fprintf(fp, "# Адрес резолвера для dns_hijack; пусто = LAN-адрес роутера:53.\n");
+    fprintf(fp, "dns_hijack_target=%s\n", c->dns_hijack_target);
+    fprintf(fp, "# Пинить CDN-префикс для адресов из vpn_always (ротация edge-ов): 0 | 1.\n");
+    fprintf(fp, "vpn_always_cdn_prefix=%d\n", c->vpn_always_cdn_prefix);
+    fprintf(fp, "# Периодически передобавлять пины списков (самолечение): 0 | 1.\n");
+    fprintf(fp, "pin_reassert=%d\n", c->pin_reassert);
+    fprintf(fp, "# N2: kernel-offload ok/CDN-адресов маршрутом через интерфейс: 0 | 1.\n");
+    fprintf(fp, "kernel_offload=%d\n", c->kernel_offload);
+    fprintf(fp, "# N2: интерфейс для offload (напр. nwg1); пусто = выключено.\n");
+    fprintf(fp, "kernel_egress=%s\n", c->kernel_egress);
+    fprintf(fp, "# N2: макс. длина префикса offload-маршрута (бит).\n");
+    fprintf(fp, "kernel_offload_max=%d\n", c->kernel_offload_max);
+    fprintf(fp, "# N3: race-пробинг egress (выбор быстрейшего): 0 | 1.\n");
+    fprintf(fp, "# Кандидаты — все интерфейсы из egress_interface.\n");
+    fprintf(fp, "egress_race=%d\n", c->egress_race);
+    fprintf(fp, "# D1: авто-возврат «в VPN хуже -> прямо» (мягкое прямо): 0 | 1.\n");
+    fprintf(fp, "auto_direct=%d\n", c->auto_direct);
+    fprintf(fp, "# D1: TTL мягкого «прямо», сек.\n");
+    fprintf(fp, "direct_pref_ttl=%d\n", out_dur(c->direct_pref_ttl, U_SEC));
+    fprintf(fp, "# M1: класс media (IPTV/видео) — детект по форме потока: 0 | 1.\n");
+    fprintf(fp, "media_enabled=%d\n", c->media_enabled);
+    fprintf(fp, "# M1: порты media через запятую.\n");
+    fprintf(fp, "media_ports=%s\n", c->media_ports);
+    fprintf(fp, "# M1: минимум принятых байт для media.\n");
+    fprintf(fp, "media_min_bytes=%d\n", c->media_min_bytes);
+    fprintf(fp, "# M1: rb >= ratio*ob.\n");
+    fprintf(fp, "media_ratio=%d\n", c->media_ratio);
+    fprintf(fp, "# M1: минимум Б/с (устойчиво).\n");
+    fprintf(fp, "media_min_rate=%d\n", c->media_min_rate);
+    fprintf(fp, "# M1: минимальный возраст потока, сек.\n");
+    fprintf(fp, "media_min_age=%d\n", out_dur(c->media_min_age, U_SEC));
+    fprintf(fp, "# M1: TTL media-префикса, сек.\n");
+    fprintf(fp, "media_ttl=%d\n", out_dur(c->media_ttl, U_SEC));
+    fprintf(fp, "# M1: макс. длина префикса агрегации (напр. 24).\n");
+    fprintf(fp, "media_prefix_max=%d\n", c->media_prefix_max);
+    fprintf(fp, "# P2: движок поддерживает default в table профиля на живом egress: 0 | 1.\n");
+    fprintf(fp, "profile_failover=%d\n", c->profile_failover);
+    fprintf(fp, "# L1: мин. пакетов к адресу для обучения.\n");
+    fprintf(fp, "learn_min_op=%d\n", c->learn_min_op);
+    fprintf(fp, "# L2: мин. байт «от нас» для обучения.\n");
+    fprintf(fp, "learn_min_bytes=%d\n", c->learn_min_bytes);
+    fprintf(fp, "# L4: мин. ответных байт для подтверждения.\n");
+    fprintf(fp, "confirm_min_bytes=%d\n", c->confirm_min_bytes);
+    fprintf(fp, "# Удвоить пороги обучения (строже): 0 | 1.\n");
+    fprintf(fp, "learn_strict=%d\n", c->learn_strict);
+    fprintf(fp, "# Пресет порогов обучения: strict | normal | aggressive (пусто = выкл).\n");
+    fprintf(fp, "# Задаёт только значения по умолчанию: ключи выше, если они есть в\n");
+    fprintf(fp, "# файле, пресет НЕ переопределяет.\n");
+    fprintf(fp, "precision=%s\n", c->precision);
+    fprintf(fp, "# Port-aware identity (экспериментально, по умолчанию 0): решения по паре\n");
+    fprintf(fp, "# адрес+порт вместо адреса целиком. Требует наборов hash:ip,port.\n");
+    fprintf(fp, "port_aware=%d\n", c->port_aware);
+    fprintf(fp, "# Файл диапазонов CDN (для агрегации по префиксу).\n");
+    fprintf(fp, "cdn_ranges_file=%s\n", c->cdn_ranges_file);
+    fprintf(fp, "# URL источника диапазонов CDN.\n");
+    fprintf(fp, "cdn_ranges_url=%s\n", c->cdn_ranges_url);
+    fprintf(fp, "# Период обновления диапазонов CDN, сек; 0 = не обновлять.\n");
+    fprintf(fp, "cdn_ranges_interval=%d\n", out_dur(c->cdn_ranges_interval, U_SEC));
+    fprintf(fp, "# Агрегация подтверждённого CDN-адреса по префиксу: 0 | 1.\n");
+    fprintf(fp, "cdn_prefix_learn=%d\n", c->cdn_prefix_learn);
+    fprintf(fp, "# TTL агрегированного CDN-префикса, сек.\n");
+    fprintf(fp, "cdn_prefix_ttl=%d\n", out_dur(c->cdn_prefix_ttl, U_SEC));
+    fprintf(fp, "# Не агрегировать шире этой маски (число бит).\n");
+    fprintf(fp, "cdn_prefix_max=%d\n", c->cdn_prefix_max);
+    fprintf(fp, "# Сколько РАЗНЫХ адресов подтвердить до агрегации префикса (>=1;\n");
+    fprintf(fp, "# 1 = агрегировать по первому подтверждению).\n");
+    fprintf(fp, "aggregate_confirm=%d\n", c->aggregate_confirm);
+    fprintf(fp, "# Блокировать IPv6 из LAN (клиенты уходят на IPv4): 0 | 1.\n");
+    fprintf(fp, "ipv6_block=%d\n", c->ipv6_block);
+    fprintf(fp, "# Блокировать QUIC (UDP/443) из LAN: 0 | 1.\n");
+    fprintf(fp, "quic_block=%d\n", c->quic_block);
+    fprintf(fp, "# MSS для туннеля: 0 = выкл, число байт (напр. 1380) или pmtu.\n");
+    fprintf(fp, "mss_clamp=%s\n", c->mss_clamp);
+    fprintf(fp, "# 1 = MSS ко всему LAN-forward, 0 = только к VPN-потокам.\n");
+    fprintf(fp, "mss_clamp_lan=%d\n", c->mss_clamp_lan);
+    fprintf(fp, "# Встроенная веб-панель включена: 0 | 1.\n");
+    fprintf(fp, "web_enable=%d\n", c->web_enable);
+    fprintf(fp, "# Адрес веб-панели (LAN, не 0.0.0.0).\n");
+    fprintf(fp, "web_listen=%s\n", c->web_listen);
+    fprintf(fp, "# Порт веб-панели.\n");
+    fprintf(fp, "web_port=%d\n", c->web_port);
+    fprintf(fp, "# Токен доступа к веб-панели (пусто = без пароля).\n");
+    fprintf(fp, "web_token=%s\n", c->web_token);
+    fprintf(fp, "# Возврат на приоритетный (первый живой) egress после восстановления: 0 | 1.\n");
+    fprintf(fp, "egress_failback=%d\n", c->egress_failback);
+    fprintf(fp, "# Сколько секунд Master должен держать UP до возврата (антидребезг).\n");
+    fprintf(fp, "egress_failback_debounce=%d\n", out_dur(c->egress_failback_debounce, U_SEC));
+    fprintf(fp, "# Тип egress: interface (nwg*/wdtt*/tun*) | tproxy (XRay/REALITY).\n");
+    fprintf(fp, "egress_type=%s\n", c->egress_type);
+    fprintf(fp, "# Порт локального Xray (dokodemo-door redirect) для egress_type=tproxy.\n");
+    fprintf(fp, "tproxy_port=%d\n", c->tproxy_port);
+    fprintf(fp, "# UDP-релей (нужен только при egress_type=tproxy): 0 | 1.\n");
+    fprintf(fp, "udp_relay=%d\n", c->udp_relay);
+    fprintf(fp, "# Порт приёма UDP-релея (TPROXY).\n");
+    fprintf(fp, "udp_relay_port=%d\n", c->udp_relay_port);
+    fprintf(fp, "# Адрес Xray SOCKS (для UDP-релея).\n");
+    fprintf(fp, "socks_addr=%s\n", c->socks_addr);
+    fprintf(fp, "# Порт Xray SOCKS.\n");
+    fprintf(fp, "socks_port=%d\n", c->socks_port);
+    for (i = 0; i < CFG_MAX_PROFILES; i++) {
+        if (!c->profile_name[i][0])
+            continue;
+        fprintf(fp, "# Профиль %d: имя (включает профиль), туннель, файл списка, таблица, fwmark.\n",
+                i + 1);
+        fprintf(fp, "profile%d_name=%s\n", i + 1, c->profile_name[i]);
+        fprintf(fp, "profile%d_egress=%s\n", i + 1, c->profile_egress[i]);
+        fprintf(fp, "profile%d_list=%s\n", i + 1, c->profile_list[i]);
+        if (c->profile_geo_url[i][0])
+            fprintf(fp, "profile%d_geo_url=%s\n", i + 1, c->profile_geo_url[i]);
+        fprintf(fp, "profile%d_table=%d\n", i + 1, c->profile_table[i]);
+        fprintf(fp, "profile%d_mark=0x%lx\n", i + 1, c->profile_mark[i]);
+        fprintf(fp, "profile%d_auto=%d\n", i + 1, c->profile_auto[i]);
+    }
     fclose(fp);
+    return 0;
+}
+
+/* Имя ключа конфига: только [a-z0-9_]. Нужно и web-панели (что можно создать). */
+int config_key_name_ok(const char *k)
+{
+    if (!k || !*k)
+        return 0;
+    for (; *k; k++)
+        if (!((*k >= 'a' && *k <= 'z') || (*k >= '0' && *k <= '9') || *k == '_'))
+            return 0;
+    return 1;
+}
+
+static int cfg_val_charset_ok(const char *v)
+{
+    if (!v)
+        return 0;
+    for (; *v; v++) {
+        unsigned char c = (unsigned char)*v;
+        if (c == '\n' || c == '\r' || c < 0x20 || c == 0x7f)
+            return 0;
+    }
+    return 1;
+}
+
+/* allow_create=0 — правим только существующий ключ (общее правило: новых ключей
+ * через web не создаём). allow_create=1 — разрешено ДОПИСАТЬ ключ, если его нет
+ * (только для ключей из белого списка, напр. profileN_*). */
+int config_file_set(const char *path, const char *key, const char *val, int allow_create)
+{
+    FILE *in, *out;
+    char line[1024], tmp[CFG_PATH_MAX + 8];
+    size_t kl;
+    int found = 0, last_nl = 1;
+
+    if (!path || !key || !val)
+        return -1;
+    if (!config_key_name_ok(key) || !cfg_val_charset_ok(val))
+        return -1;
+
+    in = fopen(path, "r");
+    if (!in)
+        return -1;
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    out = fopen(tmp, "w");
+    if (!out) {
+        fclose(in);
+        return -1;
+    }
+    kl = strlen(key);
+    while (fgets(line, sizeof(line), in)) {
+        if (!strncmp(line, key, kl) && line[kl] == '=') {
+            fprintf(out, "%s=%s\n", key, val);
+            found = 1;
+            last_nl = 1;
+        } else {
+            fputs(line, out);
+            last_nl = line[0] ? (line[strlen(line) - 1] == '\n') : last_nl;
+        }
+    }
+    fclose(in);
+    if (!found && allow_create) {
+        if (!last_nl)
+            fputc('\n', out);
+        fprintf(out, "%s=%s\n", key, val);
+        found = 1;
+    }
+    if (fclose(out) != 0) {
+        remove(tmp);
+        return -1;
+    }
+    if (!found) {
+        remove(tmp);
+        return -1;
+    }
+    if (rename(tmp, path) != 0) {
+        remove(tmp);
+        return -1;
+    }
     return 0;
 }
 
 void config_print(const susanin_config *c)
 {
+    int i;
     printf("egress_interface=%s\n", c->egress_interface);
     printf("egress_address=%s\n", c->egress_address);
     printf("lan_interfaces=%s\n", c->lan_interfaces);
@@ -299,32 +954,107 @@ void config_print(const susanin_config *c)
     printf("mark_ok=0x%lx\n", c->mark_ok);
     printf("mark_mask=0x%lx\n", c->mark_mask);
     printf("ip_rule_priority_start=%d\n", c->ip_rule_priority_start);
-    printf("fast_interval=%ds\n", c->fast_interval);
-    printf("soft_interval=%ds\n", c->soft_interval);
-    printf("judge_interval=%ds\n", c->judge_interval);
-    printf("health_interval=%ds\n", c->health_interval);
+    printf("fast_interval=%d\n", out_dur(c->fast_interval, U_SEC));
+    printf("soft_interval=%d\n", out_dur(c->soft_interval, U_SEC));
+    printf("judge_interval=%d\n", out_dur(c->judge_interval, U_SEC));
+    printf("health_interval=%d\n", out_dur(c->health_interval, U_SEC));
     printf("fast_syn_min_op=%d\n", c->fast_syn_min_op);
-    printf("ok_ttl=%ds\n", c->ok_ttl);
-    printf("ok_refresh_below=%ds\n", c->ok_refresh_below);
+    printf("ok_ttl=%d\n", out_dur(c->ok_ttl, U_SEC));
+    printf("ok_refresh_below=%d\n", out_dur(c->ok_refresh_below, U_HOUR));
     printf("ok_max_entries=%d\n", c->ok_max_entries);
     printf("ok_evict_misses=%d\n", c->ok_evict_misses);
     printf("promo_per_min=%d\n", c->promo_per_min);
-    printf("test_ttl=%ds\n", c->test_ttl);
-    printf("cooldown_ttl=%ds\n", c->cooldown_ttl);
-    printf("cooldown_ok_ttl=%ds\n", c->cooldown_ok_ttl);
-    printf("watch_ttl=%ds\n", c->watch_ttl);
-    printf("watch_retry_below=%ds\n", c->watch_retry_below);
+    printf("test_ttl=%d\n", out_dur(c->test_ttl, U_MIN));
+    printf("cooldown_ttl=%d\n", out_dur(c->cooldown_ttl, U_MIN));
+    printf("cooldown_ok_ttl=%d\n", out_dur(c->cooldown_ok_ttl, U_SEC));
+    printf("watch_ttl=%d\n", out_dur(c->watch_ttl, U_SEC));
+    printf("watch_retry_below=%d\n", out_dur(c->watch_retry_below, U_SEC));
     printf("health_miss_debounce=%d\n", c->health_miss_debounce);
+    printf("health_mode=%s\n", c->health_mode);
+    printf("health_tcp_port=%d\n", c->health_tcp_port);
     printf("health_probe=%s\n", c->health_probe);
-    printf("health_probe_src=%s\n", c->health_probe_src);
     printf("vpn_always_file=%s\n", c->vpn_always_file);
     printf("vpn_always_dns=%s\n", c->vpn_always_dns);
-    printf("vpn_always_interval=%ds\n", c->vpn_always_interval);
+    printf("vpn_always_interval=%d\n", out_dur(c->vpn_always_interval, U_SEC));
     printf("vpn_never_file=%s\n", c->vpn_never_file);
-    printf("vpn_never_interval=%ds\n", c->vpn_never_interval);
+    printf("vpn_never_interval=%d\n", out_dur(c->vpn_never_interval, U_SEC));
     printf("log_level=%s\n", c->log_level);
-    printf("diagnostics=%d\n", c->diagnostics);
+    printf("xray_loglevel=%s\n", c->xray_loglevel);
+    printf("xray_gogc=%s\n", c->xray_gogc);
+    printf("xray_gomemlimit=%s\n", c->xray_gomemlimit);
+    printf("xray_watchdog=%d\n", c->xray_watchdog);
     printf("disk_mode=%s\n", c->disk_mode);
-    printf("soft_state_interval=%ds\n", c->soft_state_interval);
+    printf("soft_state_interval=%d\n", out_dur(c->soft_state_interval, U_HOUR));
     printf("learn_exclude_ports=%s\n", c->learn_exclude_ports);
+    printf("discover_exclude=%s\n", c->discover_exclude);
+    printf("lan_server_interfaces=%s\n", c->lan_server_interfaces);
+    printf("dp_check_interval=%d\n", out_dur(c->dp_check_interval, U_SEC));
+    printf("dns_sniff=%d\n", c->dns_sniff);
+    printf("dns_sniff_ttl=%d\n", out_dur(c->dns_sniff_ttl, U_SEC));
+    printf("dns_sniff_iface=%s\n", c->dns_sniff_iface);
+    printf("dns_hijack=%d\n", c->dns_hijack);
+    printf("dns_hijack_target=%s\n", c->dns_hijack_target);
+    printf("vpn_always_cdn_prefix=%d\n", c->vpn_always_cdn_prefix);
+    printf("pin_reassert=%d\n", c->pin_reassert);
+    printf("kernel_offload=%d\n", c->kernel_offload);
+    printf("kernel_egress=%s\n", c->kernel_egress);
+    printf("kernel_offload_max=%d\n", c->kernel_offload_max);
+    printf("egress_race=%d\n", c->egress_race);
+    printf("auto_direct=%d\n", c->auto_direct);
+    printf("direct_pref_ttl=%d\n", out_dur(c->direct_pref_ttl, U_SEC));
+    printf("media_enabled=%d\n", c->media_enabled);
+    printf("media_ports=%s\n", c->media_ports);
+    printf("media_min_bytes=%d\n", c->media_min_bytes);
+    printf("media_ratio=%d\n", c->media_ratio);
+    printf("media_min_rate=%d\n", c->media_min_rate);
+    printf("media_min_age=%d\n", out_dur(c->media_min_age, U_SEC));
+    printf("media_ttl=%d\n", out_dur(c->media_ttl, U_SEC));
+    printf("media_prefix_max=%d\n", c->media_prefix_max);
+    printf("profile_failover=%d\n", c->profile_failover);
+    printf("learn_min_op=%d\n", c->learn_min_op);
+    printf("learn_min_bytes=%d\n", c->learn_min_bytes);
+    printf("confirm_min_bytes=%d\n", c->confirm_min_bytes);
+    printf("learn_strict=%d\n", c->learn_strict);
+    printf("precision=%s%s\n", c->precision[0] ? c->precision : "(выкл)",
+           !c->precision[0] ? "" :
+           (precision_known(c->precision)
+                ? "  (пресет применён к порогам, которых нет в конфиге)"
+                : "  (НЕИЗВЕСТНЫЙ пресет — игнорируется)"));
+    printf("port_aware=%d%s\n", c->port_aware,
+           c->port_aware ? "  (экспериментально: наборы hash:ip,port, решения по паре адрес+порт)" : "");
+    printf("cdn_ranges_file=%s\n", c->cdn_ranges_file);
+    printf("cdn_ranges_url=%s\n", c->cdn_ranges_url);
+    printf("cdn_ranges_interval=%d\n", out_dur(c->cdn_ranges_interval, U_SEC));
+    printf("cdn_prefix_learn=%d\n", c->cdn_prefix_learn);
+    printf("cdn_prefix_ttl=%d\n", out_dur(c->cdn_prefix_ttl, U_SEC));
+    printf("cdn_prefix_max=%d\n", c->cdn_prefix_max);
+    printf("aggregate_confirm=%d\n", c->aggregate_confirm);
+    printf("ipv6_block=%d\n", c->ipv6_block);
+    printf("quic_block=%d\n", c->quic_block);
+    printf("mss_clamp=%s\n", c->mss_clamp);
+    printf("mss_clamp_lan=%d\n", c->mss_clamp_lan);
+    printf("web_enable=%d\n", c->web_enable);
+    printf("web_listen=%s\n", c->web_listen);
+    printf("web_port=%d\n", c->web_port);
+    printf("web_token=%s\n", c->web_token);
+    printf("egress_failback=%d\n", c->egress_failback);
+    printf("egress_failback_debounce=%d\n", out_dur(c->egress_failback_debounce, U_SEC));
+    printf("egress_type=%s\n", c->egress_type);
+    printf("tproxy_port=%d\n", c->tproxy_port);
+    printf("udp_relay=%d\n", c->udp_relay);
+    printf("udp_relay_port=%d\n", c->udp_relay_port);
+    printf("socks_addr=%s\n", c->socks_addr);
+    printf("socks_port=%d\n", c->socks_port);
+    for (i = 0; i < CFG_MAX_PROFILES; i++) {
+        if (!c->profile_name[i][0])
+            continue;
+        printf("profile%d_name=%s\n", i + 1, c->profile_name[i]);
+        printf("profile%d_egress=%s\n", i + 1, c->profile_egress[i]);
+        printf("profile%d_list=%s\n", i + 1, c->profile_list[i]);
+        if (c->profile_geo_url[i][0])
+            printf("profile%d_geo_url=%s\n", i + 1, c->profile_geo_url[i]);
+        printf("profile%d_table=%d\n", i + 1, c->profile_table[i]);
+        printf("profile%d_mark=0x%lx\n", i + 1, c->profile_mark[i]);
+        printf("profile%d_auto=%d\n", i + 1, c->profile_auto[i]);
+    }
 }

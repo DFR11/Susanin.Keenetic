@@ -54,7 +54,10 @@ run() { echo "----- $* -----"; "$@" 2>&1; }
     echo "----- route table 100 -----"
     ip route show table 100 2>&1
     echo "----- ipsets (address count) -----"
-    for s in susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp susanin_ok_net susanin_never; do
+    # susanin_direct (D1, «мягко прямо») раньше не попадал в отчёт — по нему нельзя
+    # было понять, сколько адресов агент держит в авто-DIRECT.
+    for s in susanin_ok_tcp susanin_ok_udp susanin_test_tcp susanin_test_udp \
+             susanin_ok_net susanin_never susanin_direct; do
         printf "%s = " "$s"
         ipset list "$s" 2>/dev/null | grep -cE '^[0-9]+\.'
     done
@@ -65,7 +68,9 @@ run() { echo "----- $* -----"; "$@" 2>&1; }
 
     sec "INTERFACES / MTU"
     ip link show 2>/dev/null | grep -E '^[0-9]+:'
-    for i in $(ls /sys/class/net 2>/dev/null); do
+    for i in /sys/class/net/*; do
+        [ -e "$i" ] || continue
+        i=${i##*/}
         case "$i" in
             nwg*|wg*|amnezia*|awg*)
                 printf "%s mtu: " "$i"; cat "/sys/class/net/$i/mtu" 2>/dev/null ;;
@@ -74,6 +79,25 @@ run() { echo "----- $* -----"; "$@" 2>&1; }
     if [ -f /var/run/ocserv/ocserv.conf ]; then
         echo "----- ocserv mtu/mss -----"
         grep -iE 'mtu|mss' /var/run/ocserv/ocserv.conf 2>&1
+    fi
+
+    # Клиенты серверного VPN: без этих снимков причина «с телефона по
+    # OpenConnect часть сайтов висит» в отчёте не видна (разбор 2026-10-14).
+    sec "OPENCONNECT (ocserv)"
+    if [ -f /var/run/ocserv/ocserv.conf ] || \
+       iptables -t mangle -S _NDM_OCSRVVPN_MARK >/dev/null 2>&1; then
+        echo "----- lan_interfaces / lan_subnets -----"
+        grep -E '^(lan_interfaces|lan_subnets)=' /opt/susanin/etc/susanin.conf 2>&1
+        echo "----- oc* адреса -----"
+        ip -4 addr show 2>/dev/null | grep -A1 -E '^[0-9]+: oc' 2>&1
+        echo "----- iptables -t mangle -S _NDM_OCSRVVPN_MARK -----"
+        iptables -t mangle -S _NDM_OCSRVVPN_MARK 2>&1 | head -10
+        echo "----- ipset list _NDM_SRV_OCSRVVPN -----"
+        ipset list _NDM_SRV_OCSRVVPN 2>&1 | head -15
+        echo "----- SUSANIN: правила с oc (со счётчиками) -----"
+        iptables -t mangle -vnL SUSANIN 2>/dev/null | grep -E 'oc' | head -10
+    else
+        echo "OpenConnect-сервер не обнаружен"
     fi
 
     echo

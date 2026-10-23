@@ -1,6 +1,8 @@
 # internal/private working docs (not for publication)
 /PLAN.md
+/FIX.PLAN.md
 /STATUS.md
+/TESTBUILD.md
 /docs/RECON.md
 /recon/
 /AGENTS.md
@@ -10,6 +12,21 @@
 # build intermediates (release binaries ARE committed, see build/)
 *.o
 susanin-agent
+# скомпилированные host-тесты (исходники .c/.sh — на месте)
+/tests/test_*
+!/tests/test_*.c
+# .ipk-пакеты (tools/make-ipk.sh) — артефакты сборки, публикуются в Release
+*.ipk
+/dist/
+/dist-ipk/
+# Исключение: develop/ipk/ — «рабочая» публикация пакетов в ветке, чтобы
+# install.sh --ipk ставил пакет без релиза (как bootstrap.sh берёт dev-архив).
+!/develop/ipk/
+!/develop/ipk/*.ipk
+!/develop/ipk/SHA256SUMS
+# develop/bin — копия build/ для dev-архива; в git не дублируем (пересобирает
+# tools/repack-develop.sh из build/, который в git есть)
+/develop/bin/
 
 # runtime state / logs (never commit secrets)
 *.log
