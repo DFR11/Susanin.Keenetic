@@ -603,6 +603,12 @@ if [ -z "$SUBNETS" ]; then
         [ -n "$p" ] && SUBNETS="${SUBNETS:+$SUBNETS,}$p"
     done
 fi
+if [ -z "$SUBNETS" ]; then
+    # Не смогли определить (нестандартная раскладка/нет connected-маршрутов):
+    # не оставляем примеры из config.example.conf, а предупреждаем.
+    SUBNETS="192.168.1.0/24"
+    say "lan_subnets: определить не удалось — использую $SUBNETS (проверьте и поправьте при необходимости)"
+fi
 
 # OpenConnect (ocserv): клиенты выходят через tun-интерфейсы oc0, oc1, … Один oc0
 # брать нельзя: tun создаётся по требованию и выпадает из lan_interfaces после
@@ -701,7 +707,7 @@ if [ ! -f "$PREFIX/etc/susanin.conf" ] || [ "$FORCE" = 1 ]; then
     fi
     sed -i "s|^egress_interface=.*|egress_interface=$EGRESS|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
     sed -i "s|^lan_interfaces=.*|lan_interfaces=$LAN|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
-    [ -n "$SUBNETS" ] && sed -i "s|^lan_subnets=.*|lan_subnets=$SUBNETS|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
+    sed -i "s|^lan_subnets=.*|lan_subnets=$SUBNETS|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
     EA=$(addr_of "$EGRESS")
     [ -n "$EA" ] && sed -i "s|^egress_address=.*|egress_address=${EA%%/*}|" "$PREFIX/etc/susanin.conf" 2>/dev/null || true
     say "config written: $PREFIX/etc/susanin.conf"
