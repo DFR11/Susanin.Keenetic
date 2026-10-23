@@ -332,6 +332,20 @@ int backend_ready(const susanin_config *c)
     if (run_argv(argv) != 0)
         return 0;
 
+    /* T3: dns_hijack ставит DNAT 53 заранее (в т.ч. шаблоном oc+ без живого
+     * клиента). Если правила пропали (NDM/смена режима), их надо вернуть —
+     * иначе фича «включается» только после ручного restart. */
+    if (c->dns_hijack &&
+        (strstr(c->lan_interfaces, "oc") != NULL ||
+         strstr(c->lan_interfaces, "wdtt") != NULL)) {
+        char *na[6];
+        na[0] = (char *)tool_iptables();
+        na[1] = "-t"; na[2] = "nat"; na[3] = "-S"; na[4] = "PREROUTING"; na[5] = NULL;
+        if (run_capture_argv(na, out, sizeof(out)) != 0 ||
+            !strstr(out, "--dport 53 -j DNAT"))
+            return 0;
+    }
+
     if (tproxy_active(c)) {
         /* TCP REDIRECT -> tproxy_port */
         snprintf(needle, sizeof(needle), "-j REDIRECT --to-ports %d", c->tproxy_port);

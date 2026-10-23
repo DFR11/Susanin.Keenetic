@@ -604,44 +604,52 @@ _dns_hijack_dest() {
     esac
 }
 
-# Интерфейсы серверных VPN: заданные в lan_server_interfaces + фактические
-# oc*/wdtt*. Возвращает имена (для правил допустим шаблон oc+).
+# Интерфейсы серверных VPN — только те, что реально в lan_interfaces (иначе мы
+# их трафик не метим, и перехват DNS был бы неожиданным). Существование
+# интерфейса НЕ проверяем: клиент OpenConnect создаёт ocN только в момент
+# подключения, а `-i oc+` — валидный шаблон и без единого oc*. Правило ставится
+# заранее и начинает работать, когда клиент подключится.
 _dns_hijack_ifaces() {
     _out=""
-    _srv=$(cfg_val lan_server_interfaces "")
-    _srv=$(printf '%s' "$_srv" | tr ',' ' ')
-    for _i in $_srv; do
-        case " $_out " in *" $_i "*) continue ;; esac
-        _out="$_out $_i"
+    _want_wdtt=0
+    for _i in $LAN; do
+        case "$_i" in
+            oc*)   _add=oc+ ;;
+            wdtt*) _add=$_i; _want_wdtt=1 ;;
+            *)     continue ;;
+        esac
+        case " $_out " in
+            *" $_add "*) ;;
+            *) _out="$_out $_add" ;;
+        esac
     done
-    for _d in /sys/class/net/oc*; do
-        [ -e "$_d" ] || continue
-        case " $_out " in *" oc+ "*) continue ;; esac
-        _out="$_out oc+"
-    done
-    for _i in wdtt0 wdttraw0; do
-        [ -e "/sys/class/net/$_i" ] || continue
-        case " $_out " in *" $_i "*) continue ;; esac
-        _out="$_out $_i"
-    done
-    printf '%s' "$_out"
+    # qWDTT держит пару интерфейсов; если в LAN есть один — нужен и второй.
+    if [ "$_want_wdtt" = "1" ]; then
+        for _i in wdtt0 wdttraw0; do
+            case " $_out " in
+                *" $_i "*) ;;
+                *) _out="$_out $_i" ;;
+            esac
+        done
+    fi
+    printf '%s' "$_out" | sed 's/^ *//'
 }
 
 dns_hijack_clean() {
-    _dst=$(_dns_hijack_dest)
-    _srv=$(cfg_val lan_server_interfaces "")
+    _srv=$(_dns_hijack_ifaces)
     "ipt" -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53 -j DNAT' | \
         while IFS= read -r _line; do
             _del=0
-            case "$_line" in *"-i oc"*|*"-i wdtt"*) _del=1 ;; esac
-            for _i in $_srv; do
-                case "$_line" in *"-i $_i "*) _del=1 ;; esac
-            done
-            # Миграция: правила прошлой сборки ставились на все $LAN — снимаем
-            # их, если ведут на наш же резолвер.
-            if [ "$_del" = "0" ] && [ -n "$_dst" ]; then
-                case "$_line" in *"--to-destination $_dst"*) _del=1 ;; esac
-            fi
+            # Удаляем ТОЛЬКО наши правила: серверный интерфейс + исключение
+            # приватных сетей (так их ставит dns_hijack_rules). Чужой DNAT 53,
+            # даже ведущий на тот же резолвер, не трогаем.
+            case "$_line" in
+                *"! -d 10.0.0.0/8"*)
+                    for _i in $_srv; do
+                        case "$_line" in *"-i $_i "*) _del=1 ;; esac
+                    done
+                    ;;
+            esac
             [ "$_del" = "1" ] || continue
             _spec=$(printf '%s' "$_line" | sed 's/^-A PREROUTING //')
             "ipt" -t nat -D PREROUTING $_spec >/dev/null 2>&1 || true
@@ -758,11 +766,13 @@ command_status() {
         done
     fi
     echo "forward_accept: rules=$_fa/$_fan (метки ok/test/профили — нужны клиентам серверных VPN: oc+/wdtt+)"
-    _dh=$("ipt" -t nat -S PREROUTING 2>/dev/null | grep -c -- '--dport 53 -j DNAT' || true)
+    # Считаем только НАШИ правила (с исключением приватных сетей), а не любой DNAT 53.
+    _dh=$("ipt" -t nat -S PREROUTING 2>/dev/null | \
+          grep -- '--dport 53 -j DNAT' | grep -c -- '! -d 10.0.0.0/8' || true)
     if [ "$DNS_HIJACK" = "1" ]; then
-        echo "dns_hijack: on (только серверные VPN: $(_dns_hijack_ifaces) -> $(_dns_hijack_dest); правил=$_dh)"
+        echo "dns_hijack: on (серверные VPN: $(_dns_hijack_ifaces) -> $(_dns_hijack_dest); наших правил=$_dh)"
     elif [ "${_dh:-0}" -gt 0 ] 2>/dev/null; then
-        echo "dns_hijack: 0 в конфиге, но правила DNAT 53 остались ($_dh) — снимутся при следующем up/down"
+        echo "dns_hijack: 0 в конфиге, но наши правила DNAT 53 остались ($_dh) — снимутся при следующем up/down"
     else
         echo "dns_hijack: off"
     fi

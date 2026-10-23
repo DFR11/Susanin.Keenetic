@@ -499,9 +499,12 @@ if [ "$OC_SRV" = "1" ]; then
             rec "В цепочке SUSANIN нет правил с -i oc* — трафик клиентов OpenConnect проходит мимо (счётчики не растут). Проверьте lan_interfaces и перезапустите агент."
         fi
         # T3: клиент шлёт DNS на 8.8.8.8? Тогда нужен dns_hijack, иначе NXDOMAIN.
-        _dh=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -c -- '--dport 53 -j DNAT' || true)
-        echo "DNAT 53 для клиентов (dns_hijack): правил ${_dh:-0}"
-        if [ "$(cfg dns_hijack)" != "1" ] && [ "${_dh:-0}" -eq 0 ]; then
+        _dh=$(iptables -t nat -S PREROUTING 2>/dev/null | \
+              grep -- '--dport 53 -j DNAT' | grep -c -- '! -d 10.0.0.0/8' || true)
+        echo "DNAT 53 для клиентов (dns_hijack): наших правил ${_dh:-0}"
+        if [ "$(cfg dns_hijack)" = "1" ] && [ "${_dh:-0}" -eq 0 ]; then
+            rec "dns_hijack=1, но правил DNAT 53 нет — выполните 'susanin.sh reload' (или restart). Правило ставится шаблоном oc+ заранее и работает, когда клиент подключится позже."
+        elif [ "$(cfg dns_hijack)" != "1" ] && [ "${_dh:-0}" -eq 0 ]; then
             rec "Если на телефоне через OpenConnect «сайты не открываются» / DNS_PROBE_FINISHED_NXDOMAIN — включите dns_hijack=1 (DNS клиентов уйдёт на резолвер роутера; Android часто шлёт запросы на 8.8.8.8)."
         fi
     fi
