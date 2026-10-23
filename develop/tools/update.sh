@@ -228,6 +228,7 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
               xray_gogc=50 xray_gomemlimit=64MiB xray_watchdog=1 \
               kernel_offload=0 kernel_egress= kernel_offload_max=24 \
               dns_sniff=0 dns_sniff_ttl=300 dns_sniff_iface= pin_reassert=1 \
+              dns_hijack=0 dns_hijack_target= vpn_always_cdn_prefix=0 \
               mss_clamp=0 mss_clamp_lan=0 profile_failover=1 \
               auto_direct=1 direct_pref_ttl=3600 \
               media_enabled=0 media_ports=80,443,554,1935,8080,8443 media_min_bytes=1048576 \

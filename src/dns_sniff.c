@@ -30,7 +30,12 @@ typedef struct {
 } dns_entry;
 
 static dns_entry g_tab[DNS_MAX_ENTRIES];
-static int g_fd = -1;
+/* T4: слушаем ВСЕ LAN-интерфейсы (br0, br1, oc+ клиенты и т.п.), а не только
+ * первый: DNS клиента OpenConnect (oc0) иначе не виден, и его адреса не
+ * пинятся в vpn_always. Один сокет AF_PACKET на интерфейс. */
+#define DNS_MAX_IFACES 8
+static int g_fds[DNS_MAX_IFACES];
+static int g_nfd = 0;
 static int g_started = 0;
 static const susanin_config *g_cfg = NULL;
 static susanin_state *g_state = NULL;   /* для персиста пинов (может быть NULL) */
@@ -176,56 +181,77 @@ static void dns_parse(const uint8_t *p, int len)
 
 int dns_sniff_start(const susanin_config *cfg)
 {
-    struct sockaddr_ll sll;
-    char iface[64] = "";
-    unsigned idx;
-    int fd;
+    char list[256];
+    const char *p;
 
     if (g_started)
         return 0;
     g_cfg = cfg;
     if (cfg->dns_sniff_iface[0])
-        snprintf(iface, sizeof(iface), "%s", cfg->dns_sniff_iface);
-    else {
-        const char *p = cfg->lan_interfaces;
-        while (*p == ' ')
+        snprintf(list, sizeof(list), "%s", cfg->dns_sniff_iface);
+    else
+        snprintf(list, sizeof(list), "%s", cfg->lan_interfaces);
+
+    g_nfd = 0;
+    p = list;
+    while (*p && g_nfd < DNS_MAX_IFACES) {
+        char name[64];
+        size_t l = 0;
+        unsigned idx;
+        int fd;
+        struct sockaddr_ll sll;
+
+        while (*p == ',' || *p == ' ' || *p == '\t')
             p++;
-        for (idx = 0; idx < sizeof(iface) - 1 && p[idx] && p[idx] != ','; idx++)
-            iface[idx] = p[idx];
-        iface[idx] = '\0';
+        if (!*p)
+            break;
+        while (*p && *p != ',' && *p != ' ' && *p != '\t' &&
+               l < sizeof(name) - 1)
+            name[l++] = *p++;
+        name[l] = '\0';
+        if (!name[0])
+            continue;
+        idx = if_nametoindex(name);
+        if (idx == 0) {
+            /* Шаблон "oc+" или временно отсутствующий интерфейс — не ошибка. */
+            slogf(SL_DEBUG, "dns_sniff: %s сейчас нет — пропускаю", name);
+            continue;
+        }
+        fd = socket(AF_PACKET, SOCK_DGRAM, htons(ETH_P_IP));
+        if (fd < 0) {
+            slogf(SL_WARN, "dns_sniff: socket(AF_PACKET) не удался — выключено");
+            break;
+        }
+        memset(&sll, 0, sizeof(sll));
+        sll.sll_family = AF_PACKET;
+        sll.sll_protocol = htons(ETH_P_IP);
+        sll.sll_ifindex = (int)idx;
+        if (bind(fd, (struct sockaddr *)&sll, sizeof(sll)) != 0) {
+            slogf(SL_WARN, "dns_sniff: не привязаться к %s — пропускаю", name);
+            close(fd);
+            continue;
+        }
+        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+        g_fds[g_nfd++] = fd;
+        slogf(SL_INFO, "dns_sniff: слушаю DNS на %s", name);
     }
-    if (!iface[0]) {
-        slogf(SL_WARN, "dns_sniff: не задан интерфейс — выключено");
+    if (g_nfd == 0) {
+        slogf(SL_WARN, "dns_sniff: не привязаться ни к одному интерфейсу — выключено");
         return -1;
     }
-    fd = socket(AF_PACKET, SOCK_DGRAM, htons(ETH_P_IP));
-    if (fd < 0) {
-        slogf(SL_WARN, "dns_sniff: socket(AF_PACKET) не удался — выключено");
-        return -1;
-    }
-    memset(&sll, 0, sizeof(sll));
-    sll.sll_family = AF_PACKET;
-    sll.sll_protocol = htons(ETH_P_IP);
-    sll.sll_ifindex = (int)if_nametoindex(iface);
-    if (sll.sll_ifindex == 0 ||
-        bind(fd, (struct sockaddr *)&sll, sizeof(sll)) != 0) {
-        slogf(SL_WARN, "dns_sniff: не привязаться к %s — выключено", iface);
-        close(fd);
-        return -1;
-    }
-    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-    g_fd = fd;
     g_started = 1;
-    slogf(SL_INFO, "dns_sniff: слушаю DNS на %s", iface);
     return 0;
 }
 
 void dns_sniff_stop(void)
 {
     int i;
-    if (g_fd >= 0)
-        close(g_fd);
-    g_fd = -1;
+    for (i = 0; i < g_nfd; i++)
+        if (g_fds[i] >= 0)
+            close(g_fds[i]);
+    for (i = 0; i < DNS_MAX_IFACES; i++)
+        g_fds[i] = -1;
+    g_nfd = 0;
     g_started = 0;
     for (i = 0; i < 2; i++) {          /* кэш списков — освобождаем */
         if (lc[i].data) {
@@ -240,30 +266,33 @@ void dns_sniff_stop(void)
 void dns_sniff_poll(void)
 {
     uint8_t buf[2048];
-    int guard = 0;
+    int f, guard;
 
-    if (!g_started || g_fd < 0)
+    if (!g_started || g_nfd <= 0)
         return;
-    while (guard++ < 128) {
-        ssize_t r = recv(g_fd, buf, sizeof(buf), 0);
-        unsigned ihl, ulen;
-        if (r <= 0)
-            break;
-        if (r < 20)
-            continue;
-        ihl = (unsigned)(buf[0] & 0x0f) * 4;
-        if (ihl < 20 || (ssize_t)ihl + 8 > r || buf[9] != 17)
-            continue;
-        {
-            const uint8_t *udp = buf + ihl;
-            uint16_t sp = (uint16_t)((udp[0] << 8) | udp[1]);
-            uint16_t dp = (uint16_t)((udp[2] << 8) | udp[3]);
-            if (sp != 53 && dp != 53)
+    for (f = 0; f < g_nfd; f++) {
+        guard = 0;
+        while (guard++ < 128) {
+            ssize_t r = recv(g_fds[f], buf, sizeof(buf), 0);
+            unsigned ihl, ulen;
+            if (r <= 0)
+                break;
+            if (r < 20)
                 continue;
-            ulen = (unsigned)((udp[4] << 8) | udp[5]);
-            if (ulen < 8 || ihl + ulen > (unsigned)r)
+            ihl = (unsigned)(buf[0] & 0x0f) * 4;
+            if (ihl < 20 || (ssize_t)ihl + 8 > r || buf[9] != 17)
                 continue;
-            dns_parse(udp + 8, (int)(ulen - 8));
+            {
+                const uint8_t *udp = buf + ihl;
+                uint16_t sp = (uint16_t)((udp[0] << 8) | udp[1]);
+                uint16_t dp = (uint16_t)((udp[2] << 8) | udp[3]);
+                if (sp != 53 && dp != 53)
+                    continue;
+                ulen = (unsigned)((udp[4] << 8) | udp[5]);
+                if (ulen < 8 || ihl + ulen > (unsigned)r)
+                    continue;
+                dns_parse(udp + 8, (int)(ulen - 8));
+            }
         }
     }
 }

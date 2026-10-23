@@ -887,6 +887,9 @@ if [ -f "$PREFIX/etc/susanin.conf" ]; then
     ensure_key "$PREFIX/etc/susanin.conf" dns_sniff 0
     ensure_key "$PREFIX/etc/susanin.conf" dns_sniff_ttl 300
     ensure_key "$PREFIX/etc/susanin.conf" dns_sniff_iface ""
+    ensure_key "$PREFIX/etc/susanin.conf" dns_hijack 0
+    ensure_key "$PREFIX/etc/susanin.conf" dns_hijack_target ""
+    ensure_key "$PREFIX/etc/susanin.conf" vpn_always_cdn_prefix 0
     ensure_key "$PREFIX/etc/susanin.conf" pin_reassert 1
     ensure_key "$PREFIX/etc/susanin.conf" auto_direct 1
     ensure_key "$PREFIX/etc/susanin.conf" direct_pref_ttl 3600

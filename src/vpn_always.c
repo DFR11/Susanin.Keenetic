@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "vpn_always.h"
 #include "backend.h"
+#include "cdn.h"
 #include "log.h"
 
 #include <arpa/inet.h>
@@ -1066,6 +1067,16 @@ int va_refresh(vpn_always *v, const susanin_config *cfg)
              * само-восстанавливая внешне потерянные (resync/flush/GC/TTL).
              * 0 — добавляем только новые. */
             backend_ok_pin_add(cfg, desired[i], 0);
+            /* T4: домен из ALWAYS может обслуживаться CDN, который отдаёт
+             * клиенту другой edge-адрес (Cloudflare anycast). Пиним канонический
+             * префикс из cdn_ranges_file, чтобы IP клиента тоже попадал в VPN.
+             * По умолчанию выключено (уводит в VPN весь префикс). */
+            if (cfg->vpn_always_cdn_prefix) {
+                char net[64];
+                if (cdn_match(cfg, desired[i], net, sizeof(net)))
+                    backend_net_add(cfg, net,
+                                    cfg->cdn_prefix_ttl > 0 ? cfg->cdn_prefix_ttl : 3600);
+            }
         }
         if (!known) {
             tracked_add(v, desired[i]);

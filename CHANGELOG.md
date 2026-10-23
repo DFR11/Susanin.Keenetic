@@ -2,6 +2,69 @@
 
 Все заметные изменения проекта. Формат — по версиям (новые сверху).
 
+## v0.4.0
+
+Релиз 0.4.0: Xray/VLESS как egress, веб-панель, профили маршрутизации,
+резервный egress, DNS-снифинг и `.ipk`-пакеты. Ветка `develop` влита в `main`.
+
+**Критичные исправления**
+
+- **Клиенты серверных VPN (OpenConnect `oc+`, qWDTT) снова доходят до туннеля.**
+  Политика Keenetic `filter/FORWARD` — DROP, а разрешения в интерфейс
+  «Дополнительного подключения» у них нет: метка ставилась, но пакет умирал в
+  FORWARD (в `POSTROUTING` на egress — 0). Теперь `datapath.sh` добавляет
+  `filter FORWARD -m mark --mark <ok|test|профиль>/<mask> -j ACCEPT` (снимает в
+  `down`), а `backend_ready()` проверяет это правило.
+- **Режим датаплейна больше не «съезжает» на старте.** При `egress_type=tproxy` и
+  первом интерфейсе в `egress_interface` агент трактовал это как смену режима и
+  снимал tproxy-правила; `backend_ready()` при этом требовал их по конфигу —
+  бесконечный цикл `data plane missing` каждые 5–13 с, с `resync_sets()`/flush
+  (`ok_tcp 507↔252`, `ok_net 19↔6`) и окном без пинов `vpn_always`. Теперь режим
+  берётся из фактического состояния, при `tunnel_up` восстанавливается
+  `default dev <iface>` в таблице, а на ре-провижне нет flush.
+
+**Новое**
+
+- Xray/VLESS+REALITY как egress (`egress_type=tproxy`): TCP — REDIRECT, UDP —
+  собственный релей (TPROXY + SOCKS5 UDP ASSOCIATE); `tproxy` — полноправный
+  кандидат в `egress_interface` с SOCKS-пробой и fail-safe.
+- Веб-панель в агенте: статус, конфиг, списки (drag&drop и Memo-редактор),
+  профили, действия reload/rescan/restart/reset; мобильная вёрстка, токен/cookie.
+- Профили маршрутизации: до 4, `profiles.d/<name>.conf`, `geo_url`, авто-пин,
+  failover на профиль.
+- Master/Slave с failback, независимый health по каждому egress, race-пробинг,
+  watchdog и лимиты памяти Xray.
+- Автообучение: DPI-RST/DPI-STALL, класс media (IPTV), CDN-агрегация,
+  «мягкое прямо» (`auto_direct`), пресет `precision`, `port_aware` (эксперим.).
+- Списки: DNS-снифинг, wildcard-зоны и CIDR, сброс conntrack, backoff для
+  «глухих» apex, готовые наборы Telegram/OpenAI/Anthropic/YouTube/IPTV.
+- `dns_hijack` — DNS клиентов `oc+`/`wdtt+` заворачивается на резолвер роутера
+  (DNAT 53): лечит `NXDOMAIN`/«сайты не открываются» на Android.
+- `vpn_always_cdn_prefix` — для адресов ALWAYS из `cdn_ranges_file` пинится
+  CDN-префикс (клиент получает другой edge того же CDN).
+- `dns_sniff` слушает ВСЕ LAN-интерфейсы (br0, br1, `oc+`), а не только первый.
+- Совместимость: qWDTT/WDTT как LAN, `discover_exclude`, OpenConnect `oc+`,
+  реальный `discover`/`rescan` без `popen`.
+- Сеть: MSS/PMTU-кламп (профили, оба направления), `ipv6_block`, `quic_block`,
+  kernel-offload.
+- Поставка: `.ipk` для 5 архитектур, `bootstrap.sh` одной строкой, merge
+  списков и ключей при апгрейде, короткая команда `susanin …`.
+- CI: `-Werror`, `make test`, `shellcheck`, сборка `.ipk`, `check-shipping`;
+  хост-тесты (conntrack, web, classifier, state, config).
+- Документация: `USER_GUIDE.md`, `XRAY.md`, разделы TROUBLESHOOTING (IPTV,
+  Cloudflare, 403 по IP, «all egress DOWN», qWDTT, OpenConnect), `DEPLOY.md`.
+
+**Выявлено и устранено ошибок: 68**
+
+**Проверки:** 5 архитектур (mipsel, mips, aarch64, armv7, x86_64) без
+предупреждений (`-Wall -Wextra -Wpedantic`), `make test` — все наборы проходят,
+`sh -n` и `shellcheck -S error` по скриптам — чисто.
+
+**Версия:** `susanin version` → `0.4.0`.
+
+**Благодарности:** Gave_Karen, pegakmop, NJmist — за тестирование на реальных
+роутерах и отчёты с логами.
+
 ## v0.4.0.RC1.Hotfix
 
 Хотфикс к 0.4.0.RC1: ускорение обучения, Telegram «из коробки», обновление

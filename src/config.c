@@ -182,6 +182,8 @@ void config_set_defaults(susanin_config *c)
     c->egress_failback_debounce = 30;
     c->dns_sniff = 0;
     c->dns_sniff_ttl = 300;
+    c->dns_hijack = 0;
+    c->vpn_always_cdn_prefix = 0;
     c->pin_reassert = 1;
     c->kernel_offload = 0;
     c->kernel_offload_max = 24;
@@ -477,6 +479,12 @@ int config_load(const char *path, susanin_config *c)
             c->dns_sniff_ttl = parse_dur(val, U_SEC);
         else if (!strcmp(key, "dns_sniff_iface"))
             set_str(c->dns_sniff_iface, sizeof(c->dns_sniff_iface), val);
+        else if (!strcmp(key, "dns_hijack"))
+            c->dns_hijack = (int)strtol(val, NULL, 0);
+        else if (!strcmp(key, "dns_hijack_target"))
+            set_str(c->dns_hijack_target, sizeof(c->dns_hijack_target), val);
+        else if (!strcmp(key, "vpn_always_cdn_prefix"))
+            c->vpn_always_cdn_prefix = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "pin_reassert"))
             c->pin_reassert = (int)strtol(val, NULL, 0);
         else if (!strcmp(key, "kernel_offload"))
@@ -731,8 +739,15 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "dns_sniff=%d\n", c->dns_sniff);
     fprintf(fp, "# TTL записи домен->IP в снифинге, сек.\n");
     fprintf(fp, "dns_sniff_ttl=%d\n", out_dur(c->dns_sniff_ttl, U_SEC));
-    fprintf(fp, "# Интерфейс захвата DNS; пусто = первый lan_interface.\n");
+    fprintf(fp, "# Интерфейс захвата DNS; пусто = все lan_interfaces.\n");
     fprintf(fp, "dns_sniff_iface=%s\n", c->dns_sniff_iface);
+    fprintf(fp, "# Заворачивать DNS клиентов серверных VPN (oc+/wdtt+) на резолвер\n");
+    fprintf(fp, "# роутера (DNAT 53). Нужно, если клиент шлёт DNS на 8.8.8.8: 0 | 1.\n");
+    fprintf(fp, "dns_hijack=%d\n", c->dns_hijack);
+    fprintf(fp, "# Адрес резолвера для dns_hijack; пусто = LAN-адрес роутера:53.\n");
+    fprintf(fp, "dns_hijack_target=%s\n", c->dns_hijack_target);
+    fprintf(fp, "# Пинить CDN-префикс для адресов из vpn_always (ротация edge-ов): 0 | 1.\n");
+    fprintf(fp, "vpn_always_cdn_prefix=%d\n", c->vpn_always_cdn_prefix);
     fprintf(fp, "# Периодически передобавлять пины списков (самолечение): 0 | 1.\n");
     fprintf(fp, "pin_reassert=%d\n", c->pin_reassert);
     fprintf(fp, "# N2: kernel-offload ok/CDN-адресов маршрутом через интерфейс: 0 | 1.\n");
@@ -976,6 +991,9 @@ void config_print(const susanin_config *c)
     printf("dns_sniff=%d\n", c->dns_sniff);
     printf("dns_sniff_ttl=%d\n", out_dur(c->dns_sniff_ttl, U_SEC));
     printf("dns_sniff_iface=%s\n", c->dns_sniff_iface);
+    printf("dns_hijack=%d\n", c->dns_hijack);
+    printf("dns_hijack_target=%s\n", c->dns_hijack_target);
+    printf("vpn_always_cdn_prefix=%d\n", c->vpn_always_cdn_prefix);
     printf("pin_reassert=%d\n", c->pin_reassert);
     printf("kernel_offload=%d\n", c->kernel_offload);
     printf("kernel_egress=%s\n", c->kernel_egress);

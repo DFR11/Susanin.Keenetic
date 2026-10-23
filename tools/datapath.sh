@@ -56,6 +56,10 @@ KERNEL_MARK=0x00800000
 # MSS/PMTU для туннеля/CDN: "0"=выкл, число байт или "pmtu".
 MSS_CLAMP=${SUSANIN_MSS_CLAMP:-0}
 MSS_CLAMP_LAN=${SUSANIN_MSS_CLAMP_LAN:-0}
+# T3: DNS клиентов серверных VPN (oc+/wdtt+) -> резолвер роутера (DNAT 53).
+# Нужно, когда клиент шлёт DNS на 8.8.8.8, а сервер не форсирует DNS в туннель.
+DNS_HIJACK=${SUSANIN_DNS_HIJACK:-0}
+DNS_HIJACK_TARGET=${SUSANIN_DNS_HIJACK_TARGET:-}
 
 # Ручной запуск (не из демона): значения берём из конфига; из демона всё
 # приходит через окружение (backend.c) — поведение не меняется.
@@ -83,6 +87,8 @@ LAN=$(printf '%s' "$LAN" | tr ',' ' ')
 [ -n "${SUSANIN_KERNEL_EGRESS:-}" ]  || KERNEL_EGRESS=$(cfg_val kernel_egress "$KERNEL_EGRESS")
 [ -n "${SUSANIN_MSS_CLAMP:-}" ]      || MSS_CLAMP=$(cfg_val mss_clamp "$MSS_CLAMP")
 [ -n "${SUSANIN_MSS_CLAMP_LAN:-}" ]  || MSS_CLAMP_LAN=$(cfg_val mss_clamp_lan "$MSS_CLAMP_LAN")
+[ -n "${SUSANIN_DNS_HIJACK:-}" ]     || DNS_HIJACK=$(cfg_val dns_hijack "$DNS_HIJACK")
+[ -n "${SUSANIN_DNS_HIJACK_TARGET:-}" ] || DNS_HIJACK_TARGET=$(cfg_val dns_hijack_target "$DNS_HIJACK_TARGET")
 # Порты демон выставляет только когда режим включён — повторяем ту же логику.
 if [ -z "${SUSANIN_TPROXY_PORT:-}" ]; then
     if [ "$(cfg_val egress_type interface)" = "tproxy" ]; then
@@ -577,6 +583,59 @@ forward_accept_rules() {
     done
 }
 
+# T3: DNS клиентов серверных VPN. Android/Chrome шлют DNS на 8.8.8.8, а
+# Keenetic-сервер OpenConnect не форсирует «весь DNS в туннель»
+# (X-CSTP-Tunnel-All-DNS: false) — запросы уходят наружу, режутся, клиент
+# получает NXDOMAIN и «сайты не открываются». Заворачиваем 53/tcp+udp с наших
+# LAN-интерфейсов (включая oc+/wdtt+) на резолвер роутера.
+_dns_hijack_dest() {
+    _dst="$DNS_HIJACK_TARGET"
+    if [ -z "$_dst" ]; then
+        for _i in $LAN; do
+            _a=$("$IPCMD" -4 -o addr show dev "$_i" 2>/dev/null | \
+                 awk '$3 == "inet" { sub(/\/.*/, "", $4); print $4; exit }')
+            [ -n "$_a" ] && { _dst="$_a:53"; break; }
+        done
+    fi
+    case "$_dst" in
+        ''|*:*) printf '%s' "$_dst" ;;
+        *) printf '%s:53' "$_dst" ;;
+    esac
+}
+
+dns_hijack_clean() {
+    "ipt" -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53 -j DNAT' | \
+        while IFS= read -r _line; do
+            _match=0
+            for _i in $LAN; do
+                case "$_line" in *"-i $_i "*) _match=1 ;; esac
+            done
+            [ "$_match" = "1" ] || continue
+            _spec=$(printf '%s' "$_line" | sed 's/^-A PREROUTING //')
+            "ipt" -t nat -D PREROUTING $_spec >/dev/null 2>&1 || true
+        done || true
+}
+
+dns_hijack_rules() {
+    dns_hijack_clean
+    [ "$DNS_HIJACK" = "1" ] || return 0
+    _dst=$(_dns_hijack_dest)
+    if [ -z "$_dst" ]; then
+        say "dns_hijack=1, но не определён адрес резолвера — пропускаю"
+        return 0
+    fi
+    _n=0
+    for _i in $LAN; do
+        "ipt" -t nat -I PREROUTING 1 -i "$_i" -p udp --dport 53 \
+            -j DNAT --to-destination "$_dst" 2>/dev/null && _n=$((_n + 1)) || \
+            say "dns_hijack: не удалось добавить udp/53 для $_i"
+        "ipt" -t nat -I PREROUTING 1 -i "$_i" -p tcp --dport 53 \
+            -j DNAT --to-destination "$_dst" 2>/dev/null && _n=$((_n + 1)) || \
+            say "dns_hijack: не удалось добавить tcp/53 для $_i"
+    done
+    say "dns_hijack: DNS клиентов -> $_dst (правил: $_n)"
+}
+
 command_up() {
     backup
     ensure_sets
@@ -587,6 +646,7 @@ command_up() {
     ensure_jump
     ensure_table
     forward_accept_rules
+    dns_hijack_rules
     ipv6_block_rules
     quic_block_rules
     mss_clamp_rules
@@ -611,6 +671,7 @@ command_down() {
     "$IPCMD" route flush table "$TABLE" >/dev/null 2>&1 || true
     tproxy_clean || true
     forward_accept_clean || true
+    dns_hijack_clean || true
     ipv6_block_clean || true
     quic_block_clean || true
     mss_clamp_clean || true
@@ -657,6 +718,14 @@ command_status() {
         done
     fi
     echo "forward_accept: rules=$_fa/$_fan (метки ok/test/профили — нужны клиентам серверных VPN: oc+/wdtt+)"
+    _dh=$("ipt" -t nat -S PREROUTING 2>/dev/null | grep -c -- '--dport 53 -j DNAT' || true)
+    if [ "$DNS_HIJACK" = "1" ]; then
+        echo "dns_hijack: on (DNS клиентов серверных VPN -> $(_dns_hijack_dest); правил=$_dh)"
+    elif [ "${_dh:-0}" -gt 0 ] 2>/dev/null; then
+        echo "dns_hijack: 0 в конфиге, но правила DNAT 53 остались ($_dh) — снимутся при следующем up/down"
+    else
+        echo "dns_hijack: off"
+    fi
     if [ "${TPROXY_PORT:-0}" -gt 0 ] 2>/dev/null; then
         n=$("ipt" -t nat -S PREROUTING 2>/dev/null | grep -c 'REDIRECT --to-ports' || true)
         echo "redirect: port=$TPROXY_PORT rules=$n"

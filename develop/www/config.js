@@ -200,7 +200,14 @@
         { title: 'DNS-снифинг (домен → IP)', fields: [
           f('dns_sniff', 'Снифинг включён', 'зеркально смотреть DNS-ответы; штатный DNS не трогается', 'bool'),
           f('dns_sniff_ttl', 'TTL записи', 'сек', 'text', { kind: 'duration' }),
-          f('dns_sniff_iface', 'Интерфейс захвата', 'пусто = первый lan_interface', 'text', { kind: 'iface' })
+          f('dns_sniff_iface', 'Интерфейс захвата', 'пусто = все lan_interfaces', 'text', { kind: 'iface' })
+        ]},
+        { title: 'DNS клиентов серверных VPN (T3)', fields: [
+          f('dns_hijack', 'Заворачивать DNS на роутер', 'DNAT 53 с oc+/wdtt+; нужно, если клиент шлёт DNS на 8.8.8.8', 'bool'),
+          f('dns_hijack_target', 'Адрес резолвера', 'пусто = LAN-адрес роутера:53', 'text')
+        ]},
+        { title: 'CDN для списка ALWAYS (T4)', fields: [
+          f('vpn_always_cdn_prefix', 'Пинить CDN-префикс', 'для адресов из vpn_always, попадающих в cdn_ranges_file (ротация edge-ов)', 'bool')
         ]}
       ],
       note: 'DNS-снифинг помогает точнее заворачивать домены из списков вместе с поддоменами (по умолчанию выключен).'

@@ -161,6 +161,7 @@ fi
 sec "Возможности и память (dev5)"
 echo "egress pool: failback=$(cfg egress_failback) debounce=$(cfg egress_failback_debounce)s race=$(cfg egress_race)"
 echo "dns_sniff=$(cfg dns_sniff) offload=$(cfg kernel_offload) kernel_egress=$(cfg kernel_egress) xray_watchdog=$(cfg xray_watchdog)"
+echo "dns_hijack=$(cfg dns_hijack) target=$(cfg dns_hijack_target) always_cdn_prefix=$(cfg vpn_always_cdn_prefix)"
 ET=$(cfg egress_type); [ -n "$ET" ] || ET=interface
 if [ "$ET" = "tproxy" ]; then
     echo "tproxy: port=$(cfg tproxy_port) udp_relay=$(cfg udp_relay)"
@@ -496,6 +497,12 @@ if [ "$OC_SRV" = "1" ]; then
         echo "правила с -i oc* в SUSANIN: ${_occ:-0}"
         if [ "${_occ:-0}" -eq 0 ]; then
             rec "В цепочке SUSANIN нет правил с -i oc* — трафик клиентов OpenConnect проходит мимо (счётчики не растут). Проверьте lan_interfaces и перезапустите агент."
+        fi
+        # T3: клиент шлёт DNS на 8.8.8.8? Тогда нужен dns_hijack, иначе NXDOMAIN.
+        _dh=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -c -- '--dport 53 -j DNAT' || true)
+        echo "DNAT 53 для клиентов (dns_hijack): правил ${_dh:-0}"
+        if [ "$(cfg dns_hijack)" != "1" ] && [ "${_dh:-0}" -eq 0 ]; then
+            rec "Если на телефоне через OpenConnect «сайты не открываются» / DNS_PROBE_FINISHED_NXDOMAIN — включите dns_hijack=1 (DNS клиентов уйдёт на резолвер роутера; Android часто шлёт запросы на 8.8.8.8)."
         fi
     fi
 else

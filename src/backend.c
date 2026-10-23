@@ -207,6 +207,9 @@ static void set_env(const susanin_config *c)
     setenv("SUSANIN_KERNEL_EGRESS", c->kernel_egress, 1);
     setenv("SUSANIN_MSS_CLAMP", c->mss_clamp[0] ? c->mss_clamp : "0", 1);
     setenv("SUSANIN_MSS_CLAMP_LAN", c->mss_clamp_lan ? "1" : "0", 1);
+    /* T3: DNAT 53 клиентов серверных VPN на резолвер роутера. */
+    setenv("SUSANIN_DNS_HIJACK", c->dns_hijack ? "1" : "0", 1);
+    setenv("SUSANIN_DNS_HIJACK_TARGET", c->dns_hijack_target, 1);
     /* Port-aware: datapath.sh создаст наборы hash:ip,port и правила dst,dst.
      * По умолчанию 0 — прежнее поведение (наборы hash:ip, матч dst). */
     setenv("SUSANIN_PORT_AWARE", c->port_aware ? "1" : "0", 1);
