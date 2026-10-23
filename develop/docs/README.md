@@ -558,6 +558,9 @@ opkg install curl
 curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.sh | sh
 ```
 
+Установка идёт с ветки `main` — это стабильная версия; установщик сам скачает
+архив последнего стабильного релиза под вашу архитектуру.
+
 Архитектура определяется автоматически по данным Entware
 (`/opt/etc/entware_release`, затем фид из `/opt/etc/opkg.conf`, затем
 `opkg print-architecture`, затем `uname -m` + endianness ELF-заголовка).
@@ -824,17 +827,12 @@ tail -f /opt/susanin/var/soak.log        # Ctrl-C -> сводка с росто�
 Спасибо людям, которые помогали проекту — тестированием на своих роутерах,
 отчётами с логами, разбором проблем и предложениями по улучшению:
 
-- **Gave_Karen** — стенды Keenetic Viva/Ultra и разборы «сайт открывается частично»;
-- **pegakmop** — отчёты по профилям, MTU/MSS и маршрутизации OpenConnect-клиентов;
-- **NJmist** — проверка qWDTT/WDTT-сценариев и списков ALWAYS;
-- а также всем, кто присылал `diagnose.sh`, `report.sh`, дампы `iptables` и
-  `conntrack` в Issues и Telegram-группе.
+- **Gave_Karen**
+- **pegakmop**
+- **NJmist**
 
 Ваши отчёты (conntrack, `iptables`, `diagnose.sh`) — то, без чего большинство
 исправлений в этом репозитории просто не нашлось бы. Спасибо!
-
-Если вы присылали отчёт и хотите быть в этом списке — напишите в Issues или в
-[Telegram-группу](https://t.me/Susanin_Keenetic).
 
 ## Поддержать проект
 
