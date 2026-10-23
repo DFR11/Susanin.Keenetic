@@ -213,6 +213,20 @@ cmd_rescan() {
     printf '%s\n' "$d" > "$_tmp"
     _changed=""
     _keep_egress=0
+    # Все ли элементы списка $1 есть в $2 (списки через запятую). Нужно, чтобы
+    # отличить «discover дополнил список новым туннелем» (это надо принять)
+    # от «discover хочет заменить ручной выбор» (это без --force не трогаем).
+    _csv_subset() {
+        _sub_cur=$1
+        _sub_new=$2
+        for _sub_x in $(printf '%s' "$_sub_cur" | tr ',' ' '); do
+            case ",$_sub_new," in
+                *",$_sub_x,"*) ;;
+                *) return 1 ;;
+            esac
+        done
+        return 0
+    }
     while IFS='=' read -r k v; do
         case "$k" in
             egress_interface|egress_address|lan_interfaces|lan_subnets) ;;
@@ -222,9 +236,13 @@ cmd_rescan() {
         _cur=$(sed -n "s|^$k=||p" "$CONF" 2>/dev/null | head -n1)
         if [ "$k" = "egress_interface" ] && [ "$force" != "1" ] &&
            [ -n "$_cur" ] && [ "$_cur" != "$v" ]; then
-            echo "[susanin]   egress_interface: оставляю '$_cur' (ручное значение; --force — переопределить)"
-            _keep_egress=1
-            continue
+            if _csv_subset "$_cur" "$v"; then
+                echo "[susanin]   egress_interface: дополняю '$_cur' -> '$v' (новые живые туннели)"
+            else
+                echo "[susanin]   egress_interface: оставляю '$_cur' (ручное значение; --force — переопределить)"
+                _keep_egress=1
+                continue
+            fi
         fi
         if [ "$k" = "egress_address" ] && [ "$_keep_egress" = "1" ]; then
             continue
