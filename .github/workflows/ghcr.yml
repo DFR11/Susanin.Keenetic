@@ -29,13 +29,15 @@ jobs:
           echo "name=${IMG}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
+        id: ghcr_login
         if: env.HAS_GHCR_PAT == 'true'
+        continue-on-error: true
         run: |
           echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io \
             -u "${{ github.actor }}" --password-stdin
 
       - name: Build and push cross-compile image
-        if: env.HAS_GHCR_PAT == 'true'
+        if: env.HAS_GHCR_PAT == 'true' && steps.ghcr_login.outcome == 'success'
         run: |
           IMG="${{ steps.img.outputs.name }}"
           TAG="${{ github.ref_name }}"
@@ -43,7 +45,7 @@ jobs:
           docker push "${IMG}:${TAG}"
           docker push "${IMG}:latest"
 
-      - name: Образ не публикуется (нет GHCR_PAT)
-        if: env.HAS_GHCR_PAT != 'true'
+      - name: Образ не публикуется
+        if: env.HAS_GHCR_PAT != 'true' || steps.ghcr_login.outcome != 'success'
         run: |
-          echo "::notice::GHCR-образ пропущен: добавьте секрет GHCR_PAT (classic PAT, scope write:packages), затем перезапустите workflow."
+          echo "::notice::GHCR-образ пропущен: секрет GHCR_PAT отсутствует или не принят (нужен classic PAT со scope write:packages, не истёкший). Обновите/удалите секрет; на релиз это не влияет."
