@@ -467,6 +467,16 @@ if [ "$USE_IPK" -eq 1 ]; then
      «Malformed package file» = файл пакета повреждён/недокачан: проверьте
      sha256sum $IPK_FILE и df -h /opt, затем повторите."
     fi
+    # opkg может напечатать «Not downgrading …» и всё равно выйти с кодом 0.
+    # Поэтому проверяем, что в базе действительно стоит нужная версия.
+    _inst=$(opkg list-installed 2>/dev/null | awk '$1 == "susanin-keenetic" { print $3; exit }')
+    if [ -n "$_newver" ] && [ "$_inst" != "$_newver" ]; then
+        die "opkg НЕ установил $_newver (в системе: ${_inst:-нет})
+     «Not downgrading» = установленная версия нумерно выше (0.4.0 < 0.4.0.RC1.Hotfix):
+       opkg install --force-downgrade $IPK_FILE
+     либо обновиться архивом: sh /opt/susanin/tools/susanin.sh update v0.4.0"
+    fi
+    say "установлено: $_inst"
     say "готово. Проверка: susanin status && susanin diagnose"
     say "конфиг: $PREFIX/etc/susanin.conf — проверьте egress_interface и lan_interfaces"
     # VLESS/REALITY по желанию: --with-xray-tproxy (Xray скачивается отдельно,
