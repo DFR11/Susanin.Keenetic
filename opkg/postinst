@@ -61,7 +61,7 @@ merge_list "$PREFIX/etc/vpn_never.txt" "$PREFIX/share/vpn_never.txt" vpn_never
 rm -f "$PREFIX/etc/vpn_always.txt".merge.* "$PREFIX/etc/vpn_never.txt".merge.* 2>/dev/null || true
 
 # --- миграция значений по умолчанию ----------------------------------------
-# promo_per_min: в 0.4.0.RC1.Hotfix дефолт поднят 30 -> 120 (обучение быстрее).
+# promo_per_min: в 0.4.0 дефолт поднят 30 -> 120 (обучение быстрее).
 # Меняем ТОЛЬКО если стоит прежний дефолт — своё значение пользователя не трогаем.
 if [ -f "$PREFIX/etc/susanin.conf" ]; then
     _pp=$(sed -n 's/^promo_per_min=//p' "$PREFIX/etc/susanin.conf" 2>/dev/null | tail -n1)

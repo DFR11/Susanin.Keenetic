@@ -489,7 +489,7 @@ if [ "$OC_SRV" = "1" ]; then
         *oc*) ;;
         *)
             if printf '%s' "$SUB" | grep -q '172\.16\.'; then
-                rec "Полу-состояние: подсеть пула OpenConnect (172.16.x) есть в lan_subnets, но 'oc+' в lan_interfaces нет. Именно так теряется обработка клиентов после 'rescan' при отключённом телефоне; 'discover' в 0.4.0.RC1.Hotfix возвращает 'oc+' сам."
+                rec "Полу-состояние: подсеть пула OpenConnect (172.16.x) есть в lan_subnets, но 'oc+' в lan_interfaces нет. Именно так теряется обработка клиентов после 'rescan' при отключённом телефоне; 'discover' с 0.4.0 возвращает 'oc+' сам (если сервер жив)."
             fi ;;
     esac
     if command -v iptables >/dev/null 2>&1; then
@@ -606,7 +606,7 @@ if [ -r "$HLOG" ]; then
     if tail -n 200 "$HLOG" 2>/dev/null | grep -q 'all egress DOWN'; then
         if command -v ip >/dev/null 2>&1 && \
            ip route get 1.1.1.1 2>/dev/null | grep -q .; then
-            rec "В логе есть «all egress DOWN», но прямой маршрут (WAN) работает. Проверьте ICMP до health_probe с egress вручную и посмотрите время простоя: с 0.4.0.RC1.Hotfix агент дополнительно пробует TCP-пробу на health_tcp_port и пишет простой в лог раз в 5 минут. Если ICMP молчит, а ping/HTTPS через VPN идут — дело в залипшем NAT-состоянии на промежуточном сервере (см. TROUBLESHOOTING, «all egress DOWN»)."
+            rec "В логе есть «all egress DOWN», но прямой маршрут (WAN) работает. Проверьте ICMP до health_probe с egress вручную и посмотрите время простоя: с 0.4.0 агент дополнительно пробует TCP-пробу на health_tcp_port и пишет простой в лог раз в 5 минут. Если ICMP молчит, а ping/HTTPS через VPN идут — дело в залипшем NAT-состоянии на промежуточном сервере (см. TROUBLESHOOTING, «all egress DOWN»)."
         fi
     fi
 else
