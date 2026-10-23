@@ -1,5 +1,8 @@
 name: Publish GHCR image
 
+# Образ публикуется только при наличии секрета GHCR_PAT: в форке GITHUB_TOKEN
+# не может писать пакеты в GHCR, а без секрета job падал на "docker login" и
+# красил релизный тег. Без PAT job просто пропускается (зелёный).
 on:
   push:
     tags: ["v*"]
@@ -12,27 +15,35 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      HAS_GHCR_PAT: ${{ secrets.GHCR_PAT != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Lowercase image name
         id: img
+        if: env.HAS_GHCR_PAT == 'true'
         run: |
           IMG="ghcr.io/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
           echo "name=${IMG}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
+        if: env.HAS_GHCR_PAT == 'true'
         run: |
-          # Forks cannot push packages with GITHUB_TOKEN, so prefer a PAT
-          # (repo secret GHCR_PAT, scope write:packages) when present.
-          echo "${{ secrets.GHCR_PAT || secrets.GITHUB_TOKEN }}" | docker login ghcr.io \
+          echo "${{ secrets.GHCR_PAT }}" | docker login ghcr.io \
             -u "${{ github.actor }}" --password-stdin
 
       - name: Build and push cross-compile image
+        if: env.HAS_GHCR_PAT == 'true'
         run: |
           IMG="${{ steps.img.outputs.name }}"
           TAG="${{ github.ref_name }}"
           docker build -f Dockerfile.cross -t "${IMG}:${TAG}" -t "${IMG}:latest" .
           docker push "${IMG}:${TAG}"
           docker push "${IMG}:latest"
+
+      - name: Образ не публикуется (нет GHCR_PAT)
+        if: env.HAS_GHCR_PAT != 'true'
+        run: |
+          echo "::notice::GHCR-образ пропущен: добавьте секрет GHCR_PAT (classic PAT, scope write:packages), затем перезапустите workflow."

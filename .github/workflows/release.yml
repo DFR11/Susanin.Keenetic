@@ -63,7 +63,11 @@ jobs:
           set -e
           sh tools/make-ipk.sh --one "${{ matrix.arch }}" susanin-agent --out dist-ipk \
             --version "${GITHUB_REF_NAME#v}"
-          ls -l dist-ipk/
+          # Кладём пакет в корень workspace: artifact сохраняет вложенные пути, и
+          # dist-ipk/*.ipk превращался в dist/dist-ipk/*.ipk после
+          # download-artifact (merge-multiple) — публикация .ipk не находила файл.
+          cp dist-ipk/*.ipk .
+          ls -l ./*.ipk
       - name: Проверка состава поставки
         run: |
           set -e
@@ -76,7 +80,7 @@ jobs:
           name: pkg-${{ matrix.arch }}
           path: |
             susanin-keenetic-deploy-${{ matrix.arch }}.tar.gz
-            dist-ipk/*.ipk
+            *.ipk
 
   publish:
     needs: build
@@ -92,7 +96,11 @@ jobs:
       - name: Checksums
         run: |
           cd dist
-          sha256sum *.tar.gz *.ipk > SHA256SUMS 2>/dev/null || sha256sum *.tar.gz > SHA256SUMS
+          # .ipk обязательны: без них релиз выходил только с tar-архивами.
+          n=$(ls *.ipk 2>/dev/null | wc -l)
+          [ "$n" -eq 5 ] || { echo "ожидалось 5 .ipk, найдено $n"; ls -l; exit 1; }
+          sha256sum *.tar.gz *.ipk > SHA256SUMS
+          cat SHA256SUMS
           cat SHA256SUMS
       - name: Compose release notes
         run: |
