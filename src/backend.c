@@ -293,6 +293,23 @@ static const char *tool_ip(void)
     return buf;
 }
 
+/* Жив ли хоть один кандидат-интерфейс (не псевдоним tproxy/xray). Нужен, чтобы
+ * не требовать маршрут в таблице, когда VPN-подключение отключили и интерфейс
+ * исчез: маршрут уходит вместе с ним, и это не повреждение датаплейна. */
+static int egress_any_present(const susanin_config *c)
+{
+    int i;
+    char p[128];
+    for (i = 0; i < c->n_egress; i++) {
+        if (is_tproxy_name(c->egress_list[i]))
+            continue;
+        snprintf(p, sizeof(p), "/sys/class/net/%s", c->egress_list[i]);
+        if (access(p, F_OK) == 0)
+            return 1;
+    }
+    return 0;
+}
+
 /* Готов ли датаплейн? Проверяем ФАКТИЧЕСКИЙ режим (g_tproxy_mode), а не
  * cfg->egress_type: после переключения кандидата конфиг и ядро могут
  * расходиться, и сравнение с конфигом давало вечный false → цикл
@@ -359,11 +376,20 @@ int backend_ready(const susanin_config *c)
         if (run_capture_argv(ipargv, out, sizeof(out)) != 0 || !strstr(out, needle))
             return 0;
 
-        ipargv[0] = (char *)tool_ip();
-        ipargv[1] = "route"; ipargv[2] = "show"; ipargv[3] = "table";
-        ipargv[4] = tbl; ipargv[5] = NULL;
-        if (run_capture_argv(ipargv, out, sizeof(out)) != 0 || !strstr(out, "default"))
-            return 0;
+        /* Маршрут в таблице проверяем ТОЛЬКО пока жив хоть один кандидат.
+         * Когда VPN отключают в Keenetic, интерфейс исчезает и ядро вместе с ним
+         * удаляет `default dev <iface>`: это НЕ повод перепровижнить датаплейн
+         * (иначе цикл «data plane missing» каждые 5 c, падение dp_ok и 60 c
+         * бэкоффа). Health сам объявит egress DOWN и уйдёт в fail-open, а
+         * маршрут восстановится на tunnel_up (backend_set_egress). */
+        if (egress_any_present(c)) {
+            ipargv[0] = (char *)tool_ip();
+            ipargv[1] = "route"; ipargv[2] = "show"; ipargv[3] = "table";
+            ipargv[4] = tbl; ipargv[5] = NULL;
+            if (run_capture_argv(ipargv, out, sizeof(out)) != 0 ||
+                !strstr(out, "default"))
+                return 0;
+        }
 
         /* Политика Keenetic — FORWARD DROP; без ACCEPT по нашей метке клиенты
          * серверных VPN (oc+/wdtt+) не доходят до туннеля. */

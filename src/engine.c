@@ -1229,8 +1229,11 @@ int engine_run(susanin_config *cfg, const char *conf_path)
         }
 
         /* Быстрый контроль датаплейна: NDM может снести правила в любой момент,
-         * поэтому проверяем чаще общего reconcile — меньше окно fail-open. */
-        if (dp_ok && now - last_dpfast >= 5) {
+         * поэтому проверяем чаще общего reconcile — меньше окно fail-open.
+         * Только при tunnel_up: пока живого egress нет (VPN отключили), маршрута
+         * в таблице тоже нет, и проверка давала бы ложное «data plane missing»
+         * с перепровижном каждые 5 c и падением dp_ok на 60 c. */
+        if (dp_ok && tunnel_up && now - last_dpfast >= 5) {
             last_dpfast = now;
             if (!backend_ready(cfg)) {
                 slogf(SL_WARN, "data plane missing (fast check), re-provisioning");
@@ -1327,7 +1330,7 @@ int engine_run(susanin_config *cfg, const char *conf_path)
                 backend_ct_flush_vpn(cfg);
                 dp_ok = 0;
                 next_dp_try = now + 15;
-            } else if (dp_ok && !backend_ready(cfg)) {
+            } else if (dp_ok && tunnel_up && !backend_ready(cfg)) {
                 /* Was active and disappeared (e.g. NDM/firewall rebuild). */
                 slogf(SL_WARN, "data plane missing (NDM rebuild?), re-provisioning");
                 if (backend_provision(cfg) == 0) {

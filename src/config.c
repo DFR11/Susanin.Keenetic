@@ -741,8 +741,9 @@ int config_save(const char *path, const susanin_config *c)
     fprintf(fp, "dns_sniff_ttl=%d\n", out_dur(c->dns_sniff_ttl, U_SEC));
     fprintf(fp, "# Интерфейс захвата DNS; пусто = все lan_interfaces.\n");
     fprintf(fp, "dns_sniff_iface=%s\n", c->dns_sniff_iface);
-    fprintf(fp, "# Заворачивать DNS клиентов серверных VPN (oc+/wdtt+) на резолвер\n");
-    fprintf(fp, "# роутера (DNAT 53). Нужно, если клиент шлёт DNS на 8.8.8.8: 0 | 1.\n");
+    fprintf(fp, "# Заворачивать DNS клиентов СЕРВЕРНЫХ VPN (oc+/wdtt+ и\n");
+    fprintf(fp, "# lan_server_interfaces) на резолвер роутера (DNAT 53). br0/br1 и\n");
+    fprintf(fp, "# приватные адреса назначения не трогаются. 0 | 1.\n");
     fprintf(fp, "dns_hijack=%d\n", c->dns_hijack);
     fprintf(fp, "# Адрес резолвера для dns_hijack; пусто = LAN-адрес роутера:53.\n");
     fprintf(fp, "dns_hijack_target=%s\n", c->dns_hijack_target);

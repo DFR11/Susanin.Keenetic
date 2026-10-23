@@ -583,11 +583,12 @@ forward_accept_rules() {
     done
 }
 
-# T3: DNS клиентов серверных VPN. Android/Chrome шлют DNS на 8.8.8.8, а
-# Keenetic-сервер OpenConnect не форсирует «весь DNS в туннель»
-# (X-CSTP-Tunnel-All-DNS: false) — запросы уходят наружу, режутся, клиент
-# получает NXDOMAIN и «сайты не открываются». Заворачиваем 53/tcp+udp с наших
-# LAN-интерфейсов (включая oc+/wdtt+) на резолвер роутера.
+# T3: DNS клиентов СЕРВЕРНЫХ VPN (oc+/wdtt+), а не всего LAN. Android/Chrome
+# шлют DNS на 8.8.8.8, а Keenetic-сервер OpenConnect не форсирует «весь DNS в
+# туннель» (X-CSTP-Tunnel-All-DNS: false) — запросы уходят наружу, режутся,
+# клиент получает NXDOMAIN. ВАЖНО: br0/br1 не трогаем — иначе перехватим DNS
+# у AdGuard Home/своего резолвера в другом сегменте. Правила ставим только на
+# интерфейсы серверных VPN и только для НЕ-приватных адресов назначения.
 _dns_hijack_dest() {
     _dst="$DNS_HIJACK_TARGET"
     if [ -z "$_dst" ]; then
@@ -603,14 +604,45 @@ _dns_hijack_dest() {
     esac
 }
 
+# Интерфейсы серверных VPN: заданные в lan_server_interfaces + фактические
+# oc*/wdtt*. Возвращает имена (для правил допустим шаблон oc+).
+_dns_hijack_ifaces() {
+    _out=""
+    _srv=$(cfg_val lan_server_interfaces "")
+    _srv=$(printf '%s' "$_srv" | tr ',' ' ')
+    for _i in $_srv; do
+        case " $_out " in *" $_i "*) continue ;; esac
+        _out="$_out $_i"
+    done
+    for _d in /sys/class/net/oc*; do
+        [ -e "$_d" ] || continue
+        case " $_out " in *" oc+ "*) continue ;; esac
+        _out="$_out oc+"
+    done
+    for _i in wdtt0 wdttraw0; do
+        [ -e "/sys/class/net/$_i" ] || continue
+        case " $_out " in *" $_i "*) continue ;; esac
+        _out="$_out $_i"
+    done
+    printf '%s' "$_out"
+}
+
 dns_hijack_clean() {
+    _dst=$(_dns_hijack_dest)
+    _srv=$(cfg_val lan_server_interfaces "")
     "ipt" -t nat -S PREROUTING 2>/dev/null | grep -- '--dport 53 -j DNAT' | \
         while IFS= read -r _line; do
-            _match=0
-            for _i in $LAN; do
-                case "$_line" in *"-i $_i "*) _match=1 ;; esac
+            _del=0
+            case "$_line" in *"-i oc"*|*"-i wdtt"*) _del=1 ;; esac
+            for _i in $_srv; do
+                case "$_line" in *"-i $_i "*) _del=1 ;; esac
             done
-            [ "$_match" = "1" ] || continue
+            # Миграция: правила прошлой сборки ставились на все $LAN — снимаем
+            # их, если ведут на наш же резолвер.
+            if [ "$_del" = "0" ] && [ -n "$_dst" ]; then
+                case "$_line" in *"--to-destination $_dst"*) _del=1 ;; esac
+            fi
+            [ "$_del" = "1" ] || continue
             _spec=$(printf '%s' "$_line" | sed 's/^-A PREROUTING //')
             "ipt" -t nat -D PREROUTING $_spec >/dev/null 2>&1 || true
         done || true
@@ -624,16 +656,24 @@ dns_hijack_rules() {
         say "dns_hijack=1, но не определён адрес резолвера — пропускаю"
         return 0
     fi
+    _ifaces=$(_dns_hijack_ifaces)
+    if [ -z "$_ifaces" ]; then
+        say "dns_hijack=1, но интерфейсов серверных VPN (oc+/wdtt+) нет — пропускаю"
+        return 0
+    fi
     _n=0
-    for _i in $LAN; do
-        "ipt" -t nat -I PREROUTING 1 -i "$_i" -p udp --dport 53 \
-            -j DNAT --to-destination "$_dst" 2>/dev/null && _n=$((_n + 1)) || \
-            say "dns_hijack: не удалось добавить udp/53 для $_i"
-        "ipt" -t nat -I PREROUTING 1 -i "$_i" -p tcp --dport 53 \
-            -j DNAT --to-destination "$_dst" 2>/dev/null && _n=$((_n + 1)) || \
-            say "dns_hijack: не удалось добавить tcp/53 для $_i"
+    for _i in $_ifaces; do
+        for _p in udp tcp; do
+            if "ipt" -t nat -I PREROUTING 1 -i "$_i" -p "$_p" --dport 53 \
+                   ! -d 10.0.0.0/8 ! -d 172.16.0.0/12 ! -d 192.168.0.0/16 \
+                   -j DNAT --to-destination "$_dst" 2>/dev/null; then
+                _n=$((_n + 1))
+            else
+                say "dns_hijack: не удалось добавить $_p/53 для $_i"
+            fi
+        done
     done
-    say "dns_hijack: DNS клиентов -> $_dst (правил: $_n)"
+    say "dns_hijack: DNS клиентов ($_ifaces) -> $_dst (правил: $_n)"
 }
 
 command_up() {
@@ -720,7 +760,7 @@ command_status() {
     echo "forward_accept: rules=$_fa/$_fan (метки ok/test/профили — нужны клиентам серверных VPN: oc+/wdtt+)"
     _dh=$("ipt" -t nat -S PREROUTING 2>/dev/null | grep -c -- '--dport 53 -j DNAT' || true)
     if [ "$DNS_HIJACK" = "1" ]; then
-        echo "dns_hijack: on (DNS клиентов серверных VPN -> $(_dns_hijack_dest); правил=$_dh)"
+        echo "dns_hijack: on (только серверные VPN: $(_dns_hijack_ifaces) -> $(_dns_hijack_dest); правил=$_dh)"
     elif [ "${_dh:-0}" -gt 0 ] 2>/dev/null; then
         echo "dns_hijack: 0 в конфиге, но правила DNAT 53 остались ($_dh) — снимутся при следующем up/down"
     else

@@ -5,6 +5,8 @@
 
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
@@ -35,6 +37,7 @@ static dns_entry g_tab[DNS_MAX_ENTRIES];
  * пинятся в vpn_always. Один сокет AF_PACKET на интерфейс. */
 #define DNS_MAX_IFACES 8
 static int g_fds[DNS_MAX_IFACES];
+static char g_open[DNS_MAX_IFACES][64];   /* имена интерфейсов, к которым привязаны */
 static int g_nfd = 0;
 static int g_started = 0;
 static const susanin_config *g_cfg = NULL;
@@ -179,28 +182,99 @@ static void dns_parse(const uint8_t *p, int len)
     }
 }
 
-int dns_sniff_start(const susanin_config *cfg)
+/* Открыть сокет на конкретном интерфейсе. 0 = слушаем. */
+static int sniff_bind(const char *name)
+{
+    unsigned idx;
+    int fd;
+    struct sockaddr_ll sll;
+
+    if (g_nfd >= DNS_MAX_IFACES)
+        return -1;
+    idx = if_nametoindex(name);
+    if (idx == 0)
+        return -1;                  /* интерфейса сейчас нет */
+    fd = socket(AF_PACKET, SOCK_DGRAM, htons(ETH_P_IP));
+    if (fd < 0)
+        return -1;
+    memset(&sll, 0, sizeof(sll));
+    sll.sll_family = AF_PACKET;
+    sll.sll_protocol = htons(ETH_P_IP);
+    sll.sll_ifindex = (int)idx;
+    if (bind(fd, (struct sockaddr *)&sll, sizeof(sll)) != 0) {
+        slogf(SL_WARN, "dns_sniff: не привязаться к %s — пропускаю", name);
+        close(fd);
+        return -1;
+    }
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    g_fds[g_nfd] = fd;
+    snprintf(g_open[g_nfd], sizeof(g_open[0]), "%s", name);
+    g_nfd++;
+    slogf(SL_INFO, "dns_sniff: слушаю DNS на %s", name);
+    return 0;
+}
+
+static int sniff_is_open(const char *name)
+{
+    int i;
+    for (i = 0; i < g_nfd; i++)
+        if (!strcmp(g_open[i], name))
+            return 1;
+    return 0;
+}
+
+/* Раскрыть шаблон ("oc+", "wdtt*") по фактическим интерфейсам и открыть
+ * недостающие. Клиент OpenConnect создаёт ocN только при подключении, поэтому
+ * проверяем это периодически (в reconcile), а не только на старте. */
+static void sniff_try_name(const char *name)
+{
+    if (strpbrk(name, "+*") != NULL) {
+        char prefix[64];
+        size_t n = strcspn(name, "+*");
+        DIR *d;
+        struct dirent *de;
+        if (n >= sizeof(prefix))
+            n = sizeof(prefix) - 1;
+        memcpy(prefix, name, n);
+        prefix[n] = '\0';
+        d = opendir("/sys/class/net");
+        if (!d)
+            return;
+        while ((de = readdir(d)) != NULL && g_nfd < DNS_MAX_IFACES) {
+            if (de->d_name[0] == '.')
+                continue;
+            if (strncmp(de->d_name, prefix, n) != 0)
+                continue;
+            if (sniff_is_open(de->d_name))
+                continue;
+            sniff_bind(de->d_name);
+        }
+        closedir(d);
+        return;
+    }
+    if (sniff_is_open(name))
+        return;
+    if (if_nametoindex(name) == 0) {
+        slogf(SL_DEBUG, "dns_sniff: %s сейчас нет — пропускаю", name);
+        return;
+    }
+    sniff_bind(name);
+}
+
+/* Пройтись по списку интерфейсов из конфига и дооткрыть недостающие. */
+static void sniff_sync(const susanin_config *cfg)
 {
     char list[256];
     const char *p;
 
-    if (g_started)
-        return 0;
-    g_cfg = cfg;
     if (cfg->dns_sniff_iface[0])
         snprintf(list, sizeof(list), "%s", cfg->dns_sniff_iface);
     else
         snprintf(list, sizeof(list), "%s", cfg->lan_interfaces);
-
-    g_nfd = 0;
     p = list;
     while (*p && g_nfd < DNS_MAX_IFACES) {
         char name[64];
         size_t l = 0;
-        unsigned idx;
-        int fd;
-        struct sockaddr_ll sll;
-
         while (*p == ',' || *p == ' ' || *p == '\t')
             p++;
         if (!*p)
@@ -209,32 +283,18 @@ int dns_sniff_start(const susanin_config *cfg)
                l < sizeof(name) - 1)
             name[l++] = *p++;
         name[l] = '\0';
-        if (!name[0])
-            continue;
-        idx = if_nametoindex(name);
-        if (idx == 0) {
-            /* Шаблон "oc+" или временно отсутствующий интерфейс — не ошибка. */
-            slogf(SL_DEBUG, "dns_sniff: %s сейчас нет — пропускаю", name);
-            continue;
-        }
-        fd = socket(AF_PACKET, SOCK_DGRAM, htons(ETH_P_IP));
-        if (fd < 0) {
-            slogf(SL_WARN, "dns_sniff: socket(AF_PACKET) не удался — выключено");
-            break;
-        }
-        memset(&sll, 0, sizeof(sll));
-        sll.sll_family = AF_PACKET;
-        sll.sll_protocol = htons(ETH_P_IP);
-        sll.sll_ifindex = (int)idx;
-        if (bind(fd, (struct sockaddr *)&sll, sizeof(sll)) != 0) {
-            slogf(SL_WARN, "dns_sniff: не привязаться к %s — пропускаю", name);
-            close(fd);
-            continue;
-        }
-        fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
-        g_fds[g_nfd++] = fd;
-        slogf(SL_INFO, "dns_sniff: слушаю DNS на %s", name);
+        if (name[0])
+            sniff_try_name(name);
     }
+}
+
+int dns_sniff_start(const susanin_config *cfg)
+{
+    if (g_started)
+        return 0;
+    g_cfg = cfg;
+    g_nfd = 0;
+    sniff_sync(cfg);
     if (g_nfd == 0) {
         slogf(SL_WARN, "dns_sniff: не привязаться ни к одному интерфейсу — выключено");
         return -1;
@@ -243,14 +303,33 @@ int dns_sniff_start(const susanin_config *cfg)
     return 0;
 }
 
+/* Закрыть сокет и убрать его из массива (интерфейс исчез). */
+static void sniff_drop(int f)
+{
+    int i;
+    if (g_fds[f] >= 0)
+        close(g_fds[f]);
+    for (i = f; i < g_nfd - 1; i++) {
+        g_fds[i] = g_fds[i + 1];
+        memcpy(g_open[i], g_open[i + 1], sizeof(g_open[0]));
+    }
+    g_nfd--;
+    if (g_nfd >= 0 && g_nfd < DNS_MAX_IFACES) {
+        g_fds[g_nfd] = -1;
+        g_open[g_nfd][0] = '\0';
+    }
+}
+
 void dns_sniff_stop(void)
 {
     int i;
     for (i = 0; i < g_nfd; i++)
         if (g_fds[i] >= 0)
             close(g_fds[i]);
-    for (i = 0; i < DNS_MAX_IFACES; i++)
+    for (i = 0; i < DNS_MAX_IFACES; i++) {
         g_fds[i] = -1;
+        g_open[i][0] = '\0';
+    }
     g_nfd = 0;
     g_started = 0;
     for (i = 0; i < 2; i++) {          /* кэш списков — освобождаем */
@@ -266,17 +345,26 @@ void dns_sniff_stop(void)
 void dns_sniff_poll(void)
 {
     uint8_t buf[2048];
-    int f, guard;
+    int f;
 
     if (!g_started || g_nfd <= 0)
         return;
-    for (f = 0; f < g_nfd; f++) {
-        guard = 0;
+    for (f = 0; f < g_nfd; ) {
+        int guard = 0, dropped = 0;
         while (guard++ < 128) {
             ssize_t r = recv(g_fds[f], buf, sizeof(buf), 0);
             unsigned ihl, ulen;
-            if (r <= 0)
+            if (r == 0)
                 break;
+            if (r < 0) {
+                /* Интерфейс удалён (VPN отключили) — закрываем сокет, чтобы не
+                 * копить мёртвые fd; новый появится и будет открыт в reconcile. */
+                if (errno == ENODEV || errno == ENETDOWN || errno == EBADF) {
+                    sniff_drop(f);
+                    dropped = 1;
+                }
+                break;
+            }
             if (r < 20)
                 continue;
             ihl = (unsigned)(buf[0] & 0x0f) * 4;
@@ -294,6 +382,8 @@ void dns_sniff_poll(void)
                 dns_parse(udp + 8, (int)(ulen - 8));
             }
         }
+        if (!dropped)
+            f++;
     }
 }
 
@@ -441,6 +531,10 @@ void dns_sniff_reconcile(const susanin_config *cfg)
     time_t now = time(NULL);
     if (!g_started)
         return;
+    /* Клиент OpenConnect создаёт ocN только при подключении, а шаблон "oc+"
+     * нельзя привязать напрямую (if_nametoindex("oc+") == 0): дооткрываем
+     * появившиеся интерфейсы здесь, не дожидаясь перезапуска агента. */
+    sniff_sync(cfg);
     for (i = 0; i < DNS_MAX_ENTRIES; i++) {
         dns_entry *e = &g_tab[i];
         if (!e->domain[0] || e->expire <= now)

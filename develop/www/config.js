@@ -203,7 +203,7 @@
           f('dns_sniff_iface', 'Интерфейс захвата', 'пусто = все lan_interfaces', 'text', { kind: 'iface' })
         ]},
         { title: 'DNS клиентов серверных VPN (T3)', fields: [
-          f('dns_hijack', 'Заворачивать DNS на роутер', 'DNAT 53 с oc+/wdtt+; нужно, если клиент шлёт DNS на 8.8.8.8', 'bool'),
+          f('dns_hijack', 'Заворачивать DNS на роутер', 'только oc+/wdtt+ и lan_server_interfaces; br0/br1 и приватные адреса не трогаются', 'bool'),
           f('dns_hijack_target', 'Адрес резолвера', 'пусто = LAN-адрес роутера:53', 'text')
         ]},
         { title: 'CDN для списка ALWAYS (T4)', fields: [
