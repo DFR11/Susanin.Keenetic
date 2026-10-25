@@ -169,6 +169,7 @@ docker run --rm -v "$PWD/build:/out" ghcr.io/r17a/susanin.keenetic:latest \
   `/opt/susanin/etc/vpn_always.txt` **только если файла ещё нет** — при
   установке и обновлении ваш список **не перезаписывается**, но может
   **дополняться** новыми записями из сборки (merge; существующие не удаляются).
+  Дополнение выключается флагом `--keep-lists` (см. «Установка / обновление»).
   Проверить: `sh /opt/susanin/tools/susanin.sh status` покажет домены.
 
 ## Домены, которые всегда НАПРЯМУЮ (never VPN)
@@ -572,7 +573,8 @@ curl -fsSL https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/install.
 `--arch mipsel|mips|aarch64|armv7|x86_64` (задать вручную),
 `--version latest|vX.Y.Z`, `--egress <if>`, `--lan <if,if>`,
 `--subnets <cidr,cidr>`, `--yes` (без подтверждений), `--force`
-(перезаписать `susanin.conf`), `--no-start`, `--prefix <dir>`.
+(перезаписать `susanin.conf`), `--no-start`, `--prefix <dir>`,
+`--keep-lists` (не трогать существующие `vpn_always.txt`/`vpn_never.txt`).
 
 Подтверждения (`[y/N]`) можно либо отвечать вручную (`y` или `yes`), либо
 заранее передать `--yes` (`-y`) и не отвечать ни на что.
@@ -600,12 +602,18 @@ wget -qO- https://raw.githubusercontent.com/R17a/Susanin.Keenetic/main/bootstrap
 
 Флаги: `--channel stable|dev`, `--version`, `--file`, `--url`, `--check`,
 `--dry-run`, `--ipk`, `--with-xray`, `--verify`, `--tmp DIR`; остальные
-(`--yes`, `--arch`, `--egress`, `--lan`, `--force`, `--deps`) передаются в
-`install.sh`.
+(`--yes`, `--arch`, `--egress`, `--lan`, `--force`, `--deps`, `--keep-lists`)
+передаются в `install.sh`.
 
 Ваши `/opt/susanin/etc/susanin.conf`, `vpn_always.txt` и `vpn_never.txt` при
 установке и обновлении **не перезаписываются**, но списки могут **дополняться**
-новыми записями из сборки (merge; существующие строки не удаляются).
+новыми записями из сборки (merge; существующие строки не удаляются). Чтобы
+обновление не касалось списков вообще, добавьте флаг `--keep-lists`:
+
+```sh
+sh /opt/susanin/tools/susanin.sh update v0.4.1 --keep-lists
+sh install.sh --keep-lists          # то же для установки
+```
 
 Если на роутере есть **OpenConnect-сервер (ocserv)** и его интерфейс (`oc0`) не
 в маршрутизации, установщик спросит (по-английски), добавить ли его:
@@ -622,12 +630,20 @@ opkg install /opt/tmp/susanin-keenetic_0.4.0_mipsel-3.4.ipk   # или opkg upgr
 
 # скриптом (tar-архив):
 sh /opt/susanin/tools/susanin.sh update 0.4.0    # или `susanin update 0.4.0`; latest = последний релиз
+
+# то же, но списки vpn_always.txt / vpn_never.txt не трогать вообще:
+sh /opt/susanin/tools/susanin.sh update 0.4.1 --keep-lists
 ```
 
 > `susanin.sh update` сам определяет установленную версию и архитектуру, скачивает
 > deploy-архив из Releases, **сохраняет** `susanin.conf`, списки и `susanin.state`,
 > дописывает новые ключи/списки и перезапускает службу. Обновление `.ipk` делает
 > `opkg` (данные тоже не перезаписываются).
+>
+> `--keep-lists` (синоним `--no-lists`) отключает только автодополнение списков:
+> `vpn_always.txt` и `vpn_never.txt` остаются ровно такими, какие они есть.
+> Бинарь, `tools/`, `www/` и конфиг обновляются как обычно; обратный флаг —
+> `--lists` (поведение по умолчанию).
 
 ![Susanin.Keenetic uninstall](demo2.png)
 
@@ -661,7 +677,7 @@ sh /opt/susanin/tools/susanin.sh install    # datapath up + setup
 | Версия | `sh /opt/susanin/tools/susanin.sh version` (то же, что `susanin-agent version`) |
 | Снять правила | `sh /opt/susanin/tools/susanin.sh down` |
 | Убрать IP/домен из кэша | `sh /opt/susanin/tools/susanin.sh reset <ip|домен>` (синоним `forget`) |
-| Обновление | `sh /opt/susanin/tools/susanin.sh update 0.4.0` (или `latest`) |
+| Обновление | `sh /opt/susanin/tools/susanin.sh update 0.4.0` (или `latest`); без правки списков — `… update 0.4.1 --keep-lists` |
 | Удаление | `sh /opt/susanin/tools/susanin.sh uninstall [--purge]` |
 | Добавить IP в VPN вручную | `sh /opt/susanin/tools/susanin.sh add <ip> tcp test` |
 

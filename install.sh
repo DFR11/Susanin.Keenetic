@@ -29,6 +29,8 @@ EXCL_RE=$(printf '%s' "$DISCOVER_EXCLUDE" | tr ',' '|' | tr -d ' \t')
 YES=0
 FORCE=0
 NO_START=0
+# 1 = не трогать существующие vpn_always.txt/vpn_never.txt (флаг --keep-lists).
+KEEP_LISTS=0
 DISK_MODE=""
 DEPS=0
 XRAYTUN=0
@@ -167,6 +169,7 @@ while [ $# -gt 0 ]; do
         --yes|-y) YES=1 ;;
         --force) FORCE=1 ;;
         --no-start) NO_START=1 ;;
+        --keep-lists|--no-lists) KEEP_LISTS=1 ;;
         -h|--help)
             echo "usage: $0 [--arch mipsel|mips|aarch64|armv7|x86_64] [--version latest|vX.Y.Z]"
             echo "          [--ipk] [--egress IF] [--lan IF,IF] [--subnets CIDR,CIDR] [--prefix DIR]"
@@ -774,13 +777,17 @@ merge_list() { # merge_list <user_file> <package_file> <label>
     return 0
 }
 
+# vpn_always/vpn_never: --keep-lists не трогает существующие файлы вовсе.
+if [ "$KEEP_LISTS" = "1" ]; then
+    say "--keep-lists: списки vpn_always/vpn_never не трогаем"
+fi
 _va=$(find_file vpn_always.txt) || _va=""
 if [ ! -f "$PREFIX/etc/vpn_always.txt" ] && [ -n "$_va" ]; then
     cp "$_va" "$PREFIX/etc/vpn_always.txt"
     say "vpn_always list installed: $PREFIX/etc/vpn_always.txt"
 else
     say "vpn_always list kept (not overwritten; may be merged with new entries)"
-    if [ -n "$_va" ]; then
+    if [ -n "$_va" ] && [ "$KEEP_LISTS" != "1" ]; then
         merge_list "$PREFIX/etc/vpn_always.txt" "$_va" "vpn_always"
     fi
 fi
@@ -790,7 +797,7 @@ if [ ! -f "$PREFIX/etc/vpn_never.txt" ] && [ -n "$_vn" ]; then
     say "vpn_never list installed: $PREFIX/etc/vpn_never.txt"
 else
     say "vpn_never list kept (not overwritten; may be merged with new entries)"
-    if [ -n "$_vn" ]; then
+    if [ -n "$_vn" ] && [ "$KEEP_LISTS" != "1" ]; then
         merge_list "$PREFIX/etc/vpn_never.txt" "$_vn" "vpn_never"
     fi
 fi
